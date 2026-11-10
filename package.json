@@ -1,0 +1,11 @@
+{
+  "name": "softeng-final-project",
+  "private": true,
+  "scripts": {
+    "dev": "npm --prefix TrashTrack run dev",
+    "build": "npm --prefix TrashTrack run build",
+    "preview": "npm --prefix TrashTrack run preview",
+    "install:all": "npm --prefix TrashTrack install"
+  }
+}
+

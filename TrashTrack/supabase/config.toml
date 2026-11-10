@@ -1,0 +1,4 @@
+project_id = "trashtrack"
+
+[functions.submit-report]
+verify_jwt = false

@@ -1,0 +1,1886 @@
+import { useEffect, useMemo, useState } from 'react'
+import {
+  Activity,
+  AlertTriangle,
+  ArrowDownRight,
+  ArrowRight,
+  ArrowUpRight,
+  Bot,
+  Check,
+  CheckCircle2,
+  ChevronDown,
+  Clock3,
+  FileImage,
+  Filter,
+  Leaf,
+  LocateFixed,
+  LogIn,
+  MapPin,
+  Menu,
+  MessageCircle,
+  Plus,
+  Search,
+  Send,
+  ShieldCheck,
+  Sparkles,
+  UploadCloud,
+  X
+} from 'lucide-react'
+import { MapContainer, Marker, Rectangle, TileLayer, useMapEvents } from 'react-leaflet'
+import L from 'leaflet'
+import { supabase } from './lib/supabase'
+import {
+  ADMIN_DEFAULT_PASSWORD,
+  DEFAULT_LOCATION,
+  MAP_VIEW_BOUNDS,
+  SEEDED_ADMIN_ACCOUNTS,
+  UNKLAB_BOUNDS,
+  UNKLAB_CENTER,
+  analyzeWasteClientFallback,
+  buildInitialAdvice,
+  buildPeriodSummary,
+  generateChatbotAnswer,
+  generateInitialAdviceWithAI,
+  isInUnklabArea,
+  unklabZoneName
+} from './lib/ai'
+
+const statuses = ['Menunggu', 'Diproses', 'Selesai']
+
+const iconFor = status =>
+  L.divIcon({
+    className: '',
+    html: `<div class="pin pin-${status === 'Menunggu' ? 'waiting' : status === 'Diproses' ? 'progress' : 'done'}"><span></span></div>`,
+    iconSize: [30, 38],
+    iconAnchor: [15, 36]
+  })
+
+const dateLabel = date =>
+  date
+    ? new Intl.DateTimeFormat('id-ID', {
+        day: 'numeric',
+        month: 'short',
+        hour: '2-digit',
+        minute: '2-digit'
+      }).format(new Date(date))
+    : 'Baru saja'
+
+function App() {
+  const [page, setPage] = useState('overview')
+  const [reports, setReports] = useState([])
+  const [selected, setSelected] = useState(null)
+  const [statusFilter, setStatusFilter] = useState('Semua status')
+  const [categoryFilter, setCategoryFilter] = useState('Semua kategori')
+  const [severityFilter, setSeverityFilter] = useState('Semua tingkat')
+  const [query, setQuery] = useState('')
+  const [modal, setModal] = useState('')
+  const [mobileMenu, setMobileMenu] = useState(false)
+  const [notice, setNotice] = useState('')
+  const [isAdmin, setIsAdmin] = useState(() => {
+    try {
+      return Boolean(sessionStorage.getItem('unklab_admin_profile'))
+    } catch {
+      return false
+    }
+  })
+  const [adminProfile, setAdminProfile] = useState(() => {
+    try {
+      const raw = sessionStorage.getItem('unklab_admin_profile')
+      return raw ? JSON.parse(raw) : null
+    } catch {
+      return null
+    }
+  })
+  const [loginEmail, setLoginEmail] = useState('admin@unklab.ac.id')
+  const [loginPassword, setLoginPassword] = useState('')
+  const [session, setSession] = useState(null)
+  const [detailTab, setDetailTab] = useState('Detail laporan')
+  const [newMessage, setNewMessage] = useState('')
+  const [chat, setChat] = useState([
+    {
+      sender: 'ai',
+      message: 'Halo! Saya Asisten Kebersihan Universitas Klabat. Masukkan kode laporan Anda atau kirim laporan baru untuk mendapatkan saran penanganan dan pemilahan sampah.'
+    }
+  ])
+  const [isChatLoading, setIsChatLoading] = useState(false)
+  const [file, setFile] = useState(null)
+  const [previewUrl, setPreviewUrl] = useState('')
+  const [coords, setCoords] = useState(DEFAULT_LOCATION)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [submissionTimestamps, setSubmissionTimestamps] = useState([])
+  const [reportCode, setReportCode] = useState('')
+  const [reportLookup, setReportLookup] = useState(null)
+  const [summaryPeriod, setSummaryPeriod] = useState(7)
+  const [latestSummary, setLatestSummary] = useState(null)
+  const [isSummaryLoading, setIsSummaryLoading] = useState(false)
+
+  // Muat sesi autentikasi Admin (FR-06)
+  useEffect(() => {
+    if (!supabase) return
+    const applySession = async next => {
+      setSession(next)
+      if (!next) return
+      const { data: profile } = await supabase
+        .from('admins')
+        .select('id, name, email')
+        .eq('id', next.user.id)
+        .maybeSingle()
+      if (profile) {
+        setIsAdmin(true)
+        setAdminProfile(profile)
+        sessionStorage.setItem('unklab_admin_profile', JSON.stringify(profile))
+      }
+    }
+    supabase.auth.getSession().then(({ data }) => applySession(data.session))
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, next) => {
+      setSession(next)
+      if (next) setTimeout(() => applySession(next), 0)
+    })
+    return () => listener.subscription.unsubscribe()
+  }, [])
+
+  // Auto-hide toast notice
+  useEffect(() => {
+    if (notice) {
+      const t = setTimeout(() => setNotice(''), 4800)
+      return () => clearTimeout(t)
+    }
+  }, [notice])
+
+  // Muat data laporan untuk peta sebaran publik (FR-05) maupun dashboard Admin (FR-07)
+  useEffect(() => {
+    if (!supabase) return
+    const loadReports = async () => {
+      if (session) {
+        const { data } = await supabase
+          .from('reports')
+          .select('*, ai_analysis(*), chat_messages(*)')
+          .order('created_at', { ascending: false })
+        if (data?.length) {
+          const rows = data.map(r => ({
+            ...r,
+            analysis: Array.isArray(r.ai_analysis) ? r.ai_analysis[0] : r.ai_analysis,
+            chat_messages: Array.isArray(r.chat_messages) ? r.chat_messages : []
+          }))
+          setReports(rows)
+          setSelected(prev => prev || rows[0])
+          return
+        }
+      }
+      // Fallback RPC publik agar Pelapor tetap bisa melihat marker peta sebaran (FR-05)
+      const { data: pubData } = await supabase.rpc('get_public_reports')
+      if (Array.isArray(pubData) && pubData.length) {
+        setReports(pubData)
+        setSelected(prev => prev || pubData[0])
+      }
+    }
+    loadReports()
+  }, [session, isAdmin])
+
+  const filtered = useMemo(
+    () =>
+      reports.filter(
+        r =>
+          (statusFilter === 'Semua status' || r.status === statusFilter) &&
+          (categoryFilter === 'Semua kategori' || r.analysis?.category === categoryFilter) &&
+          (severityFilter === 'Semua tingkat' || r.analysis?.severity === severityFilter) &&
+          `${r.report_code} ${r.description || ''} ${unklabZoneName(r)}`
+            .toLowerCase()
+            .includes(query.toLowerCase())
+      ),
+    [reports, statusFilter, categoryFilter, severityFilter, query]
+  )
+
+  const count = status => reports.filter(r => r.status === status).length
+
+  // Navigasi dengan proteksi halaman Admin (Skenario 18: Membuka halaman admin tanpa login -> diarahkan ke login)
+  const navigate = next => {
+    setMobileMenu(false)
+    if (next === 'report') {
+      setModal('report')
+      return
+    }
+    if ((next === 'reports' || next === 'admin') && !isAdmin) {
+      setModal('login')
+      setNotice('Silakan login sebagai Admin Kebersihan Universitas Klabat terlebih dahulu.')
+      return
+    }
+    setPage(next === 'admin' ? 'reports' : next)
+  }
+
+  // Validasi / koreksi hasil AI (FR-07, Skenario 20) & pembaruan status penanganan (FR-08, Skenario 21)
+  const updateSelected = async changes => {
+    if (!isAdmin) {
+      setModal('login')
+      setNotice('Hanya Admin Kebersihan yang dapat mengubah status atau memvalidasi hasil AI.')
+      return
+    }
+    const adminId = session?.user?.id || adminProfile?.id || null
+    const nextReport = {
+      ...selected,
+      ...changes,
+      ...(changes.status ? { updated_by: adminId, updated_at: new Date().toISOString() } : {}),
+      ...(changes.analysis
+        ? {
+            analysis: {
+              ...selected.analysis,
+              ...changes.analysis,
+              is_validated: true,
+              corrected_by: adminId
+            }
+          }
+        : {})
+    }
+
+    setSelected(nextReport)
+    setReports(prev => prev.map(r => (r.id === selected.id ? nextReport : r)))
+    if (reportLookup?.id === selected.id) {
+      setReportLookup(nextReport)
+    }
+
+    if (supabase && session) {
+      if (changes.status) {
+        const { error: statusErr } = await supabase
+          .from('reports')
+          .update({ status: changes.status, updated_by: adminId })
+          .eq('id', selected.id)
+        if (statusErr) {
+          // Fallback jika kolom updated_by belum ditambahkan di DB lama
+          await supabase.from('reports').update({ status: changes.status }).eq('id', selected.id)
+        }
+      }
+      if (changes.analysis) {
+        await supabase
+          .from('ai_analysis')
+          .update({
+            category: changes.analysis.category,
+            severity: changes.analysis.severity,
+            is_validated: true,
+            corrected_by: adminId
+          })
+          .eq('report_id', selected.id)
+      }
+    }
+    setNotice(
+      changes.analysis
+        ? 'Validasi dan koreksi hasil AI berhasil disimpan.'
+        : `Status laporan ${selected.report_code} diperbarui menjadi "${changes.status}".`
+    )
+  }
+
+  // Pemilihan berkas foto dengan validasi format JPG/PNG (Skenario 2) & ukuran <= 5 MB (Skenario 3)
+  const handleFileChange = e => {
+    const f = e.target.files?.[0]
+    if (!f) {
+      setFile(null)
+      setPreviewUrl('')
+      return
+    }
+    if (!['image/jpeg', 'image/png'].includes(f.type)) {
+      setNotice('Format berkas ditolak. Unggah foto berformat JPG atau PNG.')
+      e.target.value = ''
+      setFile(null)
+      setPreviewUrl('')
+      return
+    }
+    if (f.size > 5 * 1024 * 1024) {
+      setNotice('Ukuran berkas melebihi batas maksimal 5 MB.')
+      e.target.value = ''
+      setFile(null)
+      setPreviewUrl('')
+      return
+    }
+    setFile(f)
+    setPreviewUrl(URL.createObjectURL(f))
+  }
+
+  // Alur Pengiriman Laporan & Analisis Foto (FR-01, FR-02, Gambar 4 & Gambar 5)
+  const handleReport = async event => {
+    event.preventDefault()
+    if (isSubmitting) return
+
+    const form = new FormData(event.currentTarget)
+    const description = String(form.get('description') || '').trim() || 'Laporan titik sampah di lingkungan kampus Universitas Klabat.'
+    const coordsNow = coords || DEFAULT_LOCATION
+
+    // Tahap 1 Validasi Masukan SEBELUM memanggil AI (Gambar 4 & Skenario 2, 3, 5, 6)
+    if (!file || !['image/jpeg', 'image/png'].includes(file.type)) {
+      setNotice('Format berkas ditolak. Unggah foto berformat JPG atau PNG.')
+      return
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      setNotice('Ukuran berkas melebihi batas maksimal 5 MB.')
+      return
+    }
+    if (!isInUnklabArea(coordsNow)) {
+      setNotice('Ditolak: Lokasi berada di luar area kampus Universitas Klabat.')
+      return
+    }
+
+    const oneHourAgo = Date.now() - 3600000
+    const recentSubmissions = submissionTimestamps.filter(ts => ts >= oneHourAgo)
+    if (recentSubmissions.length >= 5) {
+      setNotice('Batas 5 laporan per jam tercapai. Silakan coba lagi nanti.')
+      return
+    }
+
+    setIsSubmitting(true)
+    try {
+      let savedReport = null
+
+      // Prioritas 1: Kirim ke Server Edge Function (memvalidasi IP, memanggil Gemini Vision & Chatbot awal di server)
+      if (supabase) {
+        const body = new FormData()
+        body.append('photo', file)
+        body.append('latitude', String(coordsNow.latitude))
+        body.append('longitude', String(coordsNow.longitude))
+        body.append('description', description)
+
+        const { data: edgeData, error: edgeError } = await supabase.functions.invoke('submit-report', { body })
+        if (!edgeError && edgeData?.report_code) {
+          const initialMsg = edgeData.initial_advice || buildInitialAdvice(edgeData.analysis, coordsNow)
+          savedReport = {
+            id: edgeData.id,
+            report_code: edgeData.report_code,
+            latitude: coordsNow.latitude,
+            longitude: coordsNow.longitude,
+            description,
+            status: edgeData.status || 'Menunggu',
+            created_at: edgeData.created_at || new Date().toISOString(),
+            photo_url: previewUrl || edgeData.photo_url,
+            analysis: edgeData.analysis,
+            chat_messages: [{ sender: 'ai', message: initialMsg, created_at: new Date().toISOString() }]
+          }
+        } else if (edgeError && edgeError.message && !/not_found|404|failed to send|edge function/i.test(edgeError.message)) {
+          setNotice(edgeError.message)
+          return
+        }
+      }
+
+      // Prioritas 2: Jika Edge Function belum di-deploy, jalankan analisis dengan batas 10 detik + simpan via RPC database Supabase
+      if (!savedReport) {
+        const aiResult = await analyzeWasteClientFallback(file, description)
+        if (!aiResult || !aiResult.is_waste) {
+          setNotice('Laporan ditolak: Foto tidak terdeteksi berisi sampah.')
+          return
+        }
+
+        const initialAdvice = await generateInitialAdviceWithAI(aiResult, coordsNow)
+        const fallbackCode = `TT-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 8999)}`
+        let reportId = fallbackCode
+        let finalCode = fallbackCode
+        let createdAt = new Date().toISOString()
+
+        if (supabase) {
+          const { data: rpcData, error: rpcError } = await supabase.rpc('submit_report', {
+            p_photo_url: previewUrl || file.name,
+            p_latitude: coordsNow.latitude,
+            p_longitude: coordsNow.longitude,
+            p_description: description,
+            p_analysis: aiResult,
+            p_initial_advice: initialAdvice
+          })
+          if (rpcError && /batas 5 laporan|luar area|ditolak/i.test(rpcError.message)) {
+            setNotice(rpcError.message)
+            return
+          }
+          if (rpcData?.report_code) {
+            reportId = rpcData.id
+            finalCode = rpcData.report_code
+            createdAt = rpcData.created_at || createdAt
+          }
+        }
+
+        savedReport = {
+          id: reportId,
+          report_code: finalCode,
+          latitude: coordsNow.latitude,
+          longitude: coordsNow.longitude,
+          description,
+          status: 'Menunggu',
+          created_at: createdAt,
+          photo_url: previewUrl,
+          analysis: aiResult,
+          chat_messages: [{ sender: 'ai', message: initialAdvice, created_at: createdAt }]
+        }
+      }
+
+      setSubmissionTimestamps(prev => [...prev.filter(ts => ts >= oneHourAgo), Date.now()])
+      setReports(prev => [savedReport, ...prev])
+      setSelected(savedReport)
+      setReportCode(savedReport.report_code)
+      setReportLookup(savedReport)
+      setChat(savedReport.chat_messages)
+      setModal('')
+      setPage('status')
+      setFile(null)
+      setNotice(`Laporan berhasil dikirim! Kode laporan Anda: ${savedReport.report_code}`)
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : 'Gagal menganalisis foto. Silakan kirim ulang.')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  // Cek Status Laporan dengan Kode Unik (FR-03, Skenario 11 & 12)
+  const lookup = async e => {
+    e.preventDefault()
+    const cleanCode = reportCode.trim().toUpperCase()
+    if (!cleanCode) {
+      setNotice('Masukkan kode laporan Anda terlebih dahulu.')
+      return
+    }
+
+    const foundLocal = reports.find(r => r.report_code?.toUpperCase() === cleanCode)
+    if (foundLocal) {
+      setReportLookup(foundLocal)
+      setSelected(foundLocal)
+      const initialHistory =
+        foundLocal.chat_messages?.length > 0
+          ? foundLocal.chat_messages
+          : [{ sender: 'ai', message: buildInitialAdvice(foundLocal.analysis, foundLocal) }]
+      setChat(initialHistory)
+      return
+    }
+
+    if (supabase) {
+      const { data, error } = await supabase.rpc('get_report_by_code', { p_code: cleanCode })
+      if (data && !error) {
+        const r = {
+          ...data,
+          analysis: data.analysis,
+          chat_messages: Array.isArray(data.chat_messages) && data.chat_messages.length
+            ? data.chat_messages
+            : [{ sender: 'ai', message: buildInitialAdvice(data.analysis, data) }]
+        }
+        setReportLookup(r)
+        setSelected(r)
+        setChat(r.chat_messages)
+        return
+      }
+    }
+
+    setReportLookup(null)
+    setNotice('Laporan tidak ditemukan. Periksa kembali kode laporan Anda.')
+  }
+
+  // Chatbot Solusi (FR-04, Skenario 13 & 14) dengan penyimpanan ke Chat_Messages
+  const sendChat = async () => {
+    if (!newMessage.trim() || isChatLoading) return
+    const activeReport = reportLookup || selected
+    const userText = newMessage.trim()
+    const nextHistory = [...chat, { sender: 'user', message: userText }]
+    setChat(nextHistory)
+    setNewMessage('')
+    setIsChatLoading(true)
+
+    try {
+      if (supabase && activeReport?.report_code) {
+        await supabase.rpc('append_chat_message', {
+          p_code: activeReport.report_code,
+          p_sender: 'user',
+          p_message: userText
+        })
+      }
+
+      const aiReply = await generateChatbotAnswer({
+        message: userText,
+        report: activeReport,
+        history: nextHistory,
+        supabase
+      })
+
+      if (supabase && activeReport?.report_code) {
+        await supabase.rpc('append_chat_message', {
+          p_code: activeReport.report_code,
+          p_sender: 'ai',
+          p_message: aiReply
+        })
+      }
+
+      const updatedHistory = [...nextHistory, { sender: 'ai', message: aiReply }]
+      setChat(updatedHistory)
+      if (activeReport) {
+        const updatedReport = { ...activeReport, chat_messages: updatedHistory }
+        if (reportLookup?.id === activeReport.id) setReportLookup(updatedReport)
+        setReports(prev => prev.map(r => (r.id === activeReport.id ? updatedReport : r)))
+      }
+    } finally {
+      setIsChatLoading(false)
+    }
+  }
+
+  // Login Admin (FR-06, Skenario 16 & 17) — Mendukung Supabase Auth & Seed Akun Kelompok
+  const login = async e => {
+    e.preventDefault()
+    const fd = new FormData(e.currentTarget)
+    const emailInput = String(fd.get('email') || loginEmail || '').trim().toLowerCase()
+    const passwordInput = String(fd.get('password') || loginPassword || '')
+
+    // 1. Cek apakah sesuai dengan akun Admin Kelompok pada Seed Basis Data
+    const seededMatch = SEEDED_ADMIN_ACCOUNTS.find(a => a.email.toLowerCase() === emailInput)
+
+    if (supabase) {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: emailInput,
+        password: passwordInput
+      })
+      if (!error && data?.user) {
+        const { data: profile } = await supabase
+          .from('admins')
+          .select('id, name, email')
+          .eq('id', data.user.id)
+          .maybeSingle()
+        const resolvedProfile = profile || seededMatch || {
+          id: data.user.id,
+          name: data.user.user_metadata?.name || 'Admin Kebersihan Unklab',
+          email: data.user.email
+        }
+        setIsAdmin(true)
+        setAdminProfile(resolvedProfile)
+        sessionStorage.setItem('unklab_admin_profile', JSON.stringify(resolvedProfile))
+        setLoginPassword('')
+        setModal('')
+        setPage('reports')
+        setNotice(`Selamat datang, ${resolvedProfile.name}!`)
+        return
+      }
+    }
+
+    // 2. Verifikasi Seed Basis Data Kelompok (aktif meskipun email confirmation belum dimatikan di dashboard)
+    if (seededMatch && passwordInput === ADMIN_DEFAULT_PASSWORD) {
+      setIsAdmin(true)
+      setAdminProfile(seededMatch)
+      sessionStorage.setItem('unklab_admin_profile', JSON.stringify(seededMatch))
+      setLoginPassword('')
+      setModal('')
+      setPage('reports')
+      setNotice(`Berhasil masuk sebagai ${seededMatch.name} (${seededMatch.role}).`)
+      return
+    }
+
+    setNotice('Login ditolak: Email atau kata sandi salah.')
+  }
+
+  // Ringkasan Laporan dengan AI (FR-09, Tabel 3, Skenario 22)
+  const makeSummary = async () => {
+    if (!isAdmin) {
+      setModal('login')
+      return
+    }
+    if (!reports.length) {
+      setNotice('Belum ada laporan untuk diringkas.')
+      return
+    }
+    setIsSummaryLoading(true)
+    try {
+      const result = await buildPeriodSummary({
+        reports,
+        periodDays: summaryPeriod,
+        supabase
+      })
+      if (supabase && session) {
+        await supabase.from('ai_summaries').insert({
+          admin_id: session.user.id,
+          period_start: result.period_start,
+          period_end: result.period_end,
+          summary_text: result.summary_text
+        })
+      }
+      setLatestSummary(result)
+      setModal('summary')
+      setNotice('Ringkasan laporan AI berhasil dibuat dan disimpan.')
+    } finally {
+      setIsSummaryLoading(false)
+    }
+  }
+
+  return (
+    <div className="app-shell">
+      <aside className={`sidebar ${mobileMenu ? 'sidebar-open' : ''}`}>
+        <div className="brand">
+          <div className="brand-mark">
+            <Leaf size={21} />
+          </div>
+          <div className="brand-name">
+            trashtrack<span>UNIVERSITAS KLABAT</span>
+          </div>
+          <button className="icon-btn mobile-close" onClick={() => setMobileMenu(false)}>
+            <X size={19} />
+          </button>
+        </div>
+
+        <div className="workspace">
+          <div className="workspace-avatar">UK</div>
+          <div>
+            <strong>Universitas Klabat</strong>
+            <small>Airmadidi, Minahasa Utara</small>
+          </div>
+          <ChevronDown size={15} className="workspace-chevron" />
+        </div>
+
+        <p className="nav-label">MENU UTAMA</p>
+        <nav className="nav-list">
+          <NavButton
+            icon={<Activity size={17} />}
+            label="Ikhtisar"
+            active={page === 'overview'}
+            onClick={() => navigate('overview')}
+          />
+          <NavButton
+            icon={<MapPin size={17} />}
+            label="Laporan masuk (Admin)"
+            count={count('Menunggu')}
+            active={page === 'reports'}
+            onClick={() => navigate('reports')}
+          />
+          <NavButton
+            icon={<MapPin size={17} />}
+            label="Peta sebaran"
+            active={page === 'map'}
+            onClick={() => navigate('map')}
+          />
+          <NavButton
+            icon={<Search size={17} />}
+            label="Cek status & Chatbot"
+            active={page === 'status'}
+            onClick={() => navigate('status')}
+          />
+        </nav>
+
+        <p className="nav-label nav-label-spaced">PANEL PETUGAS</p>
+        <nav className="nav-list">
+          <NavButton
+            icon={<ShieldCheck size={17} />}
+            label={isAdmin ? 'Dashboard Admin' : 'Login Admin'}
+            active={page === 'admin'}
+            onClick={() => (isAdmin ? navigate('reports') : setModal('login'))}
+          />
+        </nav>
+
+        <div className="sidebar-bottom">
+          <div className="help-card">
+            <div className="help-icon">
+              <MessageCircle size={17} />
+            </div>
+            <strong>Kebersihan Kampus Unklab</strong>
+            <p>Laporkan titik sampah di sekitar area kampus tanpa perlu akun.</p>
+            <button onClick={() => navigate('report')}>
+              Lapor sekarang <ArrowRight size={14} />
+            </button>
+          </div>
+
+          <div className="profile">
+            <div className="profile-avatar">
+              {isAdmin ? (adminProfile?.name ? adminProfile.name.slice(0, 2).toUpperCase() : 'AD') : 'M'}
+            </div>
+            <div>
+              <strong>{isAdmin ? adminProfile?.name || 'Admin Kebersihan' : 'Pelapor Kampus'}</strong>
+              <small>{isAdmin ? adminProfile?.email || 'Petugas Universitas Klabat' : 'Mahasiswa / Warga Unklab'}</small>
+            </div>
+            {isAdmin && (
+              <button
+                className="icon-btn logout"
+                title="Keluar (Logout)"
+                onClick={async () => {
+                  await supabase?.auth.signOut()
+                  sessionStorage.removeItem('unklab_admin_profile')
+                  setAdminProfile(null)
+                  setIsAdmin(false)
+                  setPage('overview')
+                  setNotice('Anda telah keluar dari sesi Admin.')
+                }}
+              >
+                <LogIn size={16} />
+              </button>
+            )}
+          </div>
+        </div>
+      </aside>
+
+      {mobileMenu && <div className="backdrop" onClick={() => setMobileMenu(false)} />}
+
+      <main className="main-area">
+        <header className="topbar">
+          <div className="topbar-title">
+            <button className="icon-btn menu-toggle" onClick={() => setMobileMenu(true)}>
+              <Menu size={20} />
+            </button>
+            <span>TrashTrack Unklab</span>
+            <span className="crumb">/</span>
+            <strong>{pageTitle(page)}</strong>
+          </div>
+          <div className="topbar-right">
+            <div className="live-indicator">
+              <span /> GEMINI VLM ACTIVE
+            </div>
+            <div className="topbar-date">Kampus Unklab, Airmadidi</div>
+            <button className="btn btn-small btn-outline" onClick={() => navigate('report')}>
+              <Plus size={16} /> Buat laporan
+            </button>
+          </div>
+        </header>
+
+        <div className="content">
+          {page === 'overview' && (
+            <>
+              <div className="welcome-row">
+                <div>
+                  <p className="eyebrow">
+                    SISTEM DETEKSI & PELAPORAN SAMPAH <span>•</span> UNIVERSITAS KLABAT
+                  </p>
+                  <h1>
+                    Jaga kebersihan kampus
+                    <br className="mobile-br" /> bersama <span className="highlight">TrashTrack Unklab.</span>
+                  </h1>
+                  <p className="welcome-sub">
+                    Unggah foto titik sampah di lingkungan Universitas Klabat. Dianalisis otomatis dengan Vision-Language Model (Gemini API) beserta asisten chatbot pemilahan sampah.
+                  </p>
+                </div>
+                <div className="welcome-actions">
+                  <button className="btn btn-primary" onClick={() => navigate('report')}>
+                    <Plus size={17} /> Buat laporan baru
+                  </button>
+                  <button className="btn btn-outline" onClick={() => navigate('map')}>
+                    <MapPin size={16} /> Peta sebaran kampus
+                  </button>
+                </div>
+              </div>
+
+              <div className="stats-grid">
+                <StatCard
+                  title="Total laporan"
+                  value={reports.length}
+                  icon={<FileImage size={17} />}
+                  tone="blue"
+                  helper="titik sampah kampus"
+                />
+                <StatCard
+                  title="Menunggu"
+                  value={count('Menunggu')}
+                  icon={<Clock3 size={17} />}
+                  tone="orange"
+                  helper="perlu tindak lanjut"
+                />
+                <StatCard
+                  title="Diproses"
+                  value={count('Diproses')}
+                  icon={<Activity size={17} />}
+                  tone="purple"
+                  helper="sedang dibersihkan"
+                />
+                <StatCard
+                  title="Selesai"
+                  value={count('Selesai')}
+                  icon={<CheckCircle2 size={17} />}
+                  tone="green"
+                  helper="sudah tertangani"
+                />
+              </div>
+
+              <div className="dashboard-grid">
+                <section className="panel recent-panel">
+                  <div className="panel-heading">
+                    <div>
+                      <h2>Laporan terbaru di Universitas Klabat</h2>
+                      <p>Daftar laporan titik sampah yang tervalidasi sistem AI</p>
+                    </div>
+                    <button className="text-btn" onClick={() => navigate('reports')}>
+                      {isAdmin ? 'Kelola semua' : 'Login Admin'} <ArrowRight size={15} />
+                    </button>
+                  </div>
+                  <div className="report-table-wrap">
+                    <table className="report-table">
+                      <thead>
+                        <tr>
+                          <th>KODE LAPORAN</th>
+                          <th>KATEGORI AI</th>
+                          <th>LOKASI KAMPUS UNKLAB</th>
+                          <th>STATUS</th>
+                          <th>WAKTU</th>
+                          <th></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {reports.slice(0, 5).map(r => (
+                          <tr
+                            key={r.id}
+                            onClick={() => {
+                              setSelected(r)
+                              if (isAdmin) {
+                                setModal('detail')
+                              } else {
+                                setReportCode(r.report_code)
+                                setReportLookup(r)
+                                setChat(
+                                  r.chat_messages?.length
+                                    ? r.chat_messages
+                                    : [{ sender: 'ai', message: buildInitialAdvice(r.analysis, r) }]
+                                )
+                                setPage('status')
+                              }
+                            }}
+                          >
+                            <td>
+                              <strong className="report-code">{r.report_code}</strong>
+                            </td>
+                            <td>
+                              <Category category={r.analysis?.category} />
+                            </td>
+                            <td className="location-cell">
+                              <MapPin size={13} />
+                              {unklabZoneName(r)}
+                            </td>
+                            <td>
+                              <Status status={r.status} />
+                            </td>
+                            <td className="muted-cell">{dateLabel(r.created_at)}</td>
+                            <td>
+                              <button className="row-arrow">
+                                <ArrowRight size={15} />
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {!reports.length && (
+                      <div className="empty-state">
+                        Belum ada laporan masuk di area kampus Universitas Klabat.
+                      </div>
+                    )}
+                  </div>
+                </section>
+
+                <section className="panel map-preview">
+                  <div className="panel-heading">
+                    <div>
+                      <h2>Peta sebaran Unklab</h2>
+                      <p>Jl. Arnold Mononutu, Airmadidi</p>
+                    </div>
+                    <button className="icon-btn" onClick={() => navigate('map')}>
+                      <ArrowUpRight size={17} />
+                    </button>
+                  </div>
+                  <MapContainer
+                    center={UNKLAB_CENTER}
+                    zoom={16}
+                    maxBounds={MAP_VIEW_BOUNDS}
+                    maxBoundsViscosity={0.9}
+                    scrollWheelZoom={false}
+                    zoomControl={false}
+                    className="preview-map"
+                  >
+                    <TileLayer
+                      attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+                      url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                    />
+                    <Rectangle
+                      bounds={UNKLAB_BOUNDS}
+                      pathOptions={{ color: '#2b6e46', weight: 2, dashArray: '6 4', fillOpacity: 0.05 }}
+                    />
+                    {reports
+                      .filter(r => isInUnklabArea(r))
+                      .map(r => (
+                        <Marker key={r.id} position={[r.latitude, r.longitude]} icon={iconFor(r.status)} />
+                      ))}
+                  </MapContainer>
+                  <div className="map-legend">
+                    <span>
+                      <i className="dot red" />
+                      Menunggu
+                    </span>
+                    <span>
+                      <i className="dot yellow" />
+                      Diproses
+                    </span>
+                    <span>
+                      <i className="dot green" />
+                      Selesai
+                    </span>
+                  </div>
+                </section>
+              </div>
+
+              <div className="bottom-grid">
+                <section className="panel priority-panel">
+                  <div className="panel-heading">
+                    <div>
+                      <h2>Prioritas penanganan</h2>
+                      <p>Titik sampah berstatus Menunggu di lingkungan kampus</p>
+                    </div>
+                    <span className="priority-count">
+                      {reports.filter(r => r.status === 'Menunggu').length} MENUNGGU
+                    </span>
+                  </div>
+                  {reports
+                    .filter(r => r.status === 'Menunggu')
+                    .slice(0, 2)
+                    .map(r => (
+                      <button
+                        className="priority-item"
+                        key={r.id}
+                        onClick={() => {
+                          setSelected(r)
+                          if (isAdmin) setModal('detail')
+                          else {
+                            setReportCode(r.report_code)
+                            setReportLookup(r)
+                            setPage('status')
+                          }
+                        }}
+                      >
+                        <span className="priority-icon">
+                          <AlertTriangle size={17} />
+                        </span>
+                        <span className="priority-main">
+                          <strong>
+                            {r.report_code} <Status status={r.status} />
+                          </strong>
+                          <small>{r.description}</small>
+                          <small>
+                            <MapPin size={12} />
+                            {unklabZoneName(r)} · {dateLabel(r.created_at)}
+                          </small>
+                        </span>
+                        <ArrowRight size={16} />
+                      </button>
+                    ))}
+                  {!reports.some(r => r.status === 'Menunggu') && (
+                    <div className="empty-state">Tidak ada antrean laporan yang menunggu penanganan.</div>
+                  )}
+                </section>
+
+                <section className="panel ai-card">
+                  <div className="ai-orbit">
+                    <Sparkles size={21} />
+                  </div>
+                  <span className="eyebrow">AI INSIGHT</span>
+                  <h2>
+                    Ringkasan laporan AI
+                    <br />
+                    Universitas Klabat
+                  </h2>
+                  <p>
+                    Rangkum jumlah laporan, perbandingan organik/anorganik, lokasi terbanyak, dan laporan prioritas dengan Gemini AI.
+                  </p>
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '10px', zIndex: 1, position: 'relative' }}>
+                    <select
+                      className="text-input"
+                      style={{ maxWidth: '150px', padding: '7px 10px', fontSize: '0.82rem' }}
+                      value={summaryPeriod}
+                      onChange={e => setSummaryPeriod(Number(e.target.value))}
+                    >
+                      <option value={7}>7 Hari Terakhir</option>
+                      <option value={14}>14 Hari Terakhir</option>
+                      <option value={30}>30 Hari Terakhir</option>
+                    </select>
+                    <button
+                      className="btn btn-primary"
+                      disabled={isSummaryLoading}
+                      onClick={isAdmin ? makeSummary : () => setModal('login')}
+                    >
+                      <Sparkles size={15} /> {isSummaryLoading ? 'Menyusun...' : 'Buat ringkasan'}
+                    </button>
+                  </div>
+                  {latestSummary && (
+                    <small style={{ display: 'block', opacity: 0.9, lineHeight: 1.45, zIndex: 1, position: 'relative' }}>
+                      {latestSummary.summary_text}
+                    </small>
+                  )}
+                  <div className="ai-glow" />
+                </section>
+              </div>
+            </>
+          )}
+
+          {page === 'reports' && (
+            <ReportsPage
+              reports={filtered}
+              selected={selected}
+              setSelected={setSelected}
+              statusFilter={statusFilter}
+              setStatusFilter={setStatusFilter}
+              categoryFilter={categoryFilter}
+              setCategoryFilter={setCategoryFilter}
+              severityFilter={severityFilter}
+              setSeverityFilter={setSeverityFilter}
+              query={query}
+              setQuery={setQuery}
+              onDetail={() => {
+                setDetailTab('Detail laporan')
+                setModal('detail')
+              }}
+              onMakeSummary={makeSummary}
+              isSummaryLoading={isSummaryLoading}
+            />
+          )}
+
+          {page === 'map' && (
+            <div className="page-stack">
+              <div className="page-heading">
+                <div>
+                  <p className="eyebrow">PEMANTAUAN LOKASI</p>
+                  <h1>Peta sebaran titik sampah Universitas Klabat</h1>
+                  <p>Area Kampus Unklab, Jl. Arnold Mononutu, Airmadidi (batas garis hijau putus-putus)</p>
+                </div>
+                <button className="btn btn-primary" onClick={() => navigate('report')}>
+                  <Plus size={16} /> Buat laporan
+                </button>
+              </div>
+              <section className="panel full-map-panel">
+                <div className="map-tools">
+                  <span>
+                    <i className="dot red" /> Menunggu <b>{count('Menunggu')}</b>
+                  </span>
+                  <span>
+                    <i className="dot yellow" /> Diproses <b>{count('Diproses')}</b>
+                  </span>
+                  <span>
+                    <i className="dot green" /> Selesai <b>{count('Selesai')}</b>
+                  </span>
+                  <span className="map-hint">
+                    <MapPin size={14} /> Klik marker untuk melihat detail laporan & hasil analisis AI
+                  </span>
+                </div>
+                <MapContainer
+                  center={UNKLAB_CENTER}
+                  zoom={16}
+                  maxBounds={MAP_VIEW_BOUNDS}
+                  maxBoundsViscosity={0.9}
+                  className="full-map"
+                >
+                  <TileLayer
+                    attribution='&copy; OpenStreetMap'
+                    url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                  />
+                  <Rectangle
+                    bounds={UNKLAB_BOUNDS}
+                    pathOptions={{ color: '#2b6e46', weight: 2, dashArray: '6 4', fillOpacity: 0.04 }}
+                  />
+                  {reports
+                    .filter(r => isInUnklabArea(r))
+                    .map(r => (
+                      <Marker
+                        key={r.id}
+                        position={[r.latitude, r.longitude]}
+                        icon={iconFor(r.status)}
+                        eventHandlers={{
+                          click: () => {
+                            setSelected(r)
+                            setDetailTab('Detail laporan')
+                            setModal('detail')
+                          }
+                        }}
+                      />
+                    ))}
+                </MapContainer>
+              </section>
+            </div>
+          )}
+
+          {page === 'status' && (
+            <StatusPage
+              reportCode={reportCode}
+              setReportCode={setReportCode}
+              lookup={lookup}
+              report={reportLookup}
+              chat={chat}
+              newMessage={newMessage}
+              setNewMessage={setNewMessage}
+              sendChat={sendChat}
+              isChatLoading={isChatLoading}
+            />
+          )}
+        </div>
+
+        <footer className="footer">
+          <span>© 2026 TrashTrack — Sistem Deteksi & Pelaporan Titik Sampah Universitas Klabat.</span>
+          <span>
+            <span className="footer-dot" /> Gemini API Vision & Chatbot Terintegrasi
+          </span>
+        </footer>
+      </main>
+
+      {/* Modal Form Pelaporan Tanpa Login (FR-01, FR-02, NFR-01, NFR-04, NFR-06) */}
+      {modal === 'report' && (
+        <Modal
+          title="Buat laporan titik sampah baru"
+          subtitle="Khusus area Kampus Universitas Klabat (Unklab), Airmadidi."
+          onClose={() => !isSubmitting && setModal('')}
+        >
+          <form className="form-stack" onSubmit={handleReport}>
+            <label className="upload-zone">
+              {file ? (
+                <>
+                  <CheckCircle2 size={23} />
+                  <b>{file.name}</b>
+                  <small>
+                    {(file.size / 1024 / 1024).toFixed(2)} MB · Siap dianalisis Gemini Vision
+                  </small>
+                </>
+              ) : (
+                <>
+                  <UploadCloud size={25} />
+                  <b>Unggah foto titik sampah</b>
+                  <small>Format JPG atau PNG · Maksimal 5 MB</small>
+                  <span className="upload-cta">Pilih foto</span>
+                </>
+              )}
+              <input
+                type="file"
+                accept="image/jpeg,image/png"
+                onChange={handleFileChange}
+              />
+            </label>
+
+            <div className="field">
+              <label>Lokasi titik sampah di Kampus Universitas Klabat</label>
+              <div className="location-input">
+                <MapPin size={17} />
+                <span>
+                  {coords
+                    ? `${coords.latitude.toFixed(5)}, ${coords.longitude.toFixed(5)} (${unklabZoneName(coords)})`
+                    : 'Pilih titik pada peta kampus Unklab'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    navigator.geolocation?.getCurrentPosition(
+                      pos => {
+                        const p = { latitude: pos.coords.latitude, longitude: pos.coords.longitude }
+                        setCoords(p)
+                        if (!isInUnklabArea(p)) {
+                          setNotice('Peringatan: Koordinat GPS berada di luar area kampus Universitas Klabat.')
+                        } else {
+                          setNotice(`Lokasi GPS terdeteksi di ${unklabZoneName(p)}.`)
+                        }
+                      },
+                      () => setNotice('Izin lokasi GPS ditolak/tidak tersedia. Silakan pilih titik langsung pada peta di bawah.')
+                    )
+                  }
+                >
+                  <LocateFixed size={16} /> GPS
+                </button>
+              </div>
+            </div>
+
+            <div className="picker-map">
+              <LocationPicker
+                coords={coords}
+                onPick={p => {
+                  setCoords(p)
+                  if (!isInUnklabArea(p)) {
+                    setNotice('Titik yang dipilih berada di luar batas kampus Universitas Klabat.')
+                  }
+                }}
+              />
+              <div className="picker-hint">
+                <MapPin size={13} /> Klik di dalam kotak garis hijau (Area Kampus Universitas Klabat)
+              </div>
+            </div>
+
+            <div className="field">
+              <label htmlFor="desc">
+                Deskripsi patokan lokasi <span>Opsional</span>
+              </label>
+              <textarea
+                id="desc"
+                name="description"
+                rows="3"
+                placeholder="Contoh: Tumpukan sampah plastik/daun di dekat Student Center atau Gedung Kuliah GK..."
+              />
+            </div>
+
+            <div className="form-info">
+              <Sparkles size={15} />{' '}
+              {isSubmitting
+                ? 'Sedang menganalisis foto dengan Gemini Vision API (batas maks. 10 detik)...'
+                : 'Foto akan divalidasi dan dianalisis otomatis oleh Gemini API sebelum disimpan.'}
+            </div>
+
+            <button className="btn btn-primary btn-wide" type="submit" disabled={!file || isSubmitting}>
+              <Send size={16} />{' '}
+              {isSubmitting ? 'Menganalisis foto & menyimpan laporan...' : 'Kirim laporan'}
+            </button>
+            <p className="form-disclaimer">
+              Batas pengiriman: maksimal 5 laporan per jam per alamat IP.
+            </p>
+          </form>
+        </Modal>
+      )}
+
+      {/* Modal Login Admin (FR-06) */}
+      {modal === 'login' && (
+        <Modal
+          title="Login Admin Kebersihan Unklab"
+          subtitle="Pilih akun anggota kelompok atau masukkan email & kata sandi."
+          onClose={() => setModal('')}
+        >
+          <form className="form-stack" onSubmit={login}>
+            <div className="field">
+              <label>Pilih cepat akun Admin Kelompok (Seed Basis Data)</label>
+              <select
+                className="text-input"
+                value={loginEmail}
+                onChange={e => setLoginEmail(e.target.value)}
+              >
+                {SEEDED_ADMIN_ACCOUNTS.map(acc => (
+                  <option key={acc.email} value={acc.email}>
+                    {acc.name} ({acc.email})
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="field">
+              <label>Email Admin</label>
+              <input
+                className="text-input"
+                type="email"
+                name="email"
+                value={loginEmail}
+                onChange={e => setLoginEmail(e.target.value)}
+                placeholder="admin@unklab.ac.id"
+                required
+              />
+            </div>
+            <div className="field">
+              <label>Kata sandi</label>
+              <input
+                className="text-input"
+                type="password"
+                name="password"
+                value={loginPassword}
+                onChange={e => setLoginPassword(e.target.value)}
+                placeholder="Masukkan kata sandi (UnklabAdmin2026!)"
+                required
+              />
+            </div>
+            <div className="form-info">
+              <ShieldCheck size={15} /> Password akun kelompok: <b>UnklabAdmin2026!</b> (terenkripsi bcrypt).
+            </div>
+            <button className="btn btn-primary btn-wide" type="submit">
+              <LogIn size={16} /> Masuk ke Dashboard Admin
+            </button>
+          </form>
+        </Modal>
+      )}
+
+      {/* Modal Ringkasan AI (FR-09, Tabel 3, Skenario 22) */}
+      {modal === 'summary' && latestSummary && (
+        <Modal
+          title="Ringkasan Laporan AI"
+          subtitle={`Periode: ${dateLabel(latestSummary.period_start)} – ${dateLabel(latestSummary.period_end)}`}
+          onClose={() => setModal('')}
+        >
+          <div className="form-stack">
+            <div className="ai-result">
+              <div className="ai-result-icon">
+                <Sparkles size={21} />
+              </div>
+              <div>
+                <strong>Hasil Ringkasan Gemini AI — Universitas Klabat</strong>
+                <p>Disimpan ke tabel ai_summaries</p>
+              </div>
+            </div>
+            <p style={{ lineHeight: 1.65, fontSize: '0.94rem', margin: '4px 0' }}>
+              {latestSummary.summary_text}
+            </p>
+            <button className="btn btn-primary btn-wide" onClick={() => setModal('')}>
+              <Check size={16} /> Tutup ringkasan
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {/* Modal Detail Laporan, Ubah Status (FR-08) & Validasi AI Human-in-the-Loop (FR-07) */}
+      {modal === 'detail' && selected && (
+        <Modal
+          wide
+          title={selected.report_code}
+          subtitle={`${unklabZoneName(selected)} · Dilaporkan ${dateLabel(selected.created_at)}`}
+          onClose={() => setModal('')}
+        >
+          {isAdmin && (
+            <div className="detail-tabs">
+              <button
+                className={detailTab === 'Detail laporan' ? 'active' : ''}
+                onClick={() => setDetailTab('Detail laporan')}
+              >
+                Detail laporan
+              </button>
+              <button
+                className={detailTab === 'Validasi AI' ? 'active' : ''}
+                onClick={() => setDetailTab('Validasi AI')}
+              >
+                Validasi & Koreksi AI
+              </button>
+            </div>
+          )}
+
+          {detailTab === 'Detail laporan' || !isAdmin ? (
+            <div className="detail-layout">
+              <div className="detail-photo" style={{ overflow: 'hidden', position: 'relative' }}>
+                {selected.photo_url && (selected.photo_url.startsWith('blob:') || selected.photo_url.startsWith('http')) ? (
+                  <img
+                    src={selected.photo_url}
+                    alt={selected.report_code}
+                    style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '14px' }}
+                  />
+                ) : (
+                  <>
+                    <FileImage size={27} />
+                    <span>Foto laporan ({selected.report_code})</span>
+                  </>
+                )}
+              </div>
+              <div className="detail-info">
+                <div className="detail-status-row">
+                  <Status status={selected.status} />
+                  <span className="confidence">
+                    <Sparkles size={14} /> AI {Math.round((selected.analysis?.confidence_score || 0.9) * 100)}% yakin
+                    {selected.analysis?.is_validated ? ' (Tervalidasi Admin)' : ''}
+                  </span>
+                </div>
+                <h3>{selected.description}</h3>
+                <p>
+                  <MapPin size={14} /> {unklabZoneName(selected)} ({selected.latitude.toFixed(5)},{' '}
+                  {selected.longitude.toFixed(5)})
+                </p>
+                <div className="detail-tags">
+                  <Category category={selected.analysis?.category} />
+                  <Severity severity={selected.analysis?.severity} />
+                </div>
+
+                {isAdmin ? (
+                  <div className="field">
+                    <label>Perbarui status penanganan</label>
+                    <select
+                      className="text-input"
+                      value={selected.status}
+                      onChange={e => updateSelected({ status: e.target.value })}
+                    >
+                      {statuses.map(s => (
+                        <option key={s} value={s}>
+                          {s}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ) : (
+                  <button
+                    className="btn btn-outline"
+                    onClick={() => {
+                      setReportCode(selected.report_code)
+                      setReportLookup(selected)
+                      setChat(
+                        selected.chat_messages?.length
+                          ? selected.chat_messages
+                          : [{ sender: 'ai', message: buildInitialAdvice(selected.analysis, selected) }]
+                      )
+                      setModal('')
+                      setPage('status')
+                    }}
+                  >
+                    <Bot size={16} /> Buka Cek Status & Asisten Chatbot
+                  </button>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="validation-content">
+              <div className="ai-result">
+                <div className="ai-result-icon">
+                  <Bot size={21} />
+                </div>
+                <div>
+                  <strong>Hasil Analisis Vision-Language Model (Gemini API)</strong>
+                  <p>
+                    Objek terdeteksi sebagai sampah · Confidence score{' '}
+                    {Math.round((selected.analysis?.confidence_score || 0.9) * 100)}% · Status:{' '}
+                    {selected.analysis?.is_validated ? 'Sudah Divalidasi' : 'Belum Divalidasi'}
+                  </p>
+                </div>
+              </div>
+              <div className="two-fields">
+                <div className="field">
+                  <label>Kategori sampah</label>
+                  <select
+                    className="text-input"
+                    value={selected.analysis?.category || 'organik'}
+                    onChange={e =>
+                      setSelected({
+                        ...selected,
+                        analysis: { ...selected.analysis, category: e.target.value }
+                      })
+                    }
+                  >
+                    <option value="organik">Organik</option>
+                    <option value="anorganik">Anorganik</option>
+                  </select>
+                </div>
+                <div className="field">
+                  <label>Tingkat keparahan</label>
+                  <select
+                    className="text-input"
+                    value={selected.analysis?.severity || 'sedang'}
+                    onChange={e =>
+                      setSelected({
+                        ...selected,
+                        analysis: { ...selected.analysis, severity: e.target.value }
+                      })
+                    }
+                  >
+                    <option value="rendah">Rendah</option>
+                    <option value="sedang">Sedang</option>
+                    <option value="tinggi">Tinggi</option>
+                  </select>
+                </div>
+              </div>
+              <button
+                className="btn btn-primary btn-wide"
+                onClick={() =>
+                  updateSelected({
+                    analysis: { ...selected.analysis, is_validated: true }
+                  })
+                }
+              >
+                <Check size={16} /> Validasi dan simpan koreksi (HITL)
+              </button>
+              <p className="validation-note">
+                <ShieldCheck size={14} /> Pendekatan Human-in-the-Loop (HITL): koreksi admin tercatat pada kolom
+                is_validated dan corrected_by sebagai bahan evaluasi prompt.
+              </p>
+            </div>
+          )}
+        </Modal>
+      )}
+
+      {notice && (
+        <div className="toast">
+          <CheckCircle2 size={17} />
+          <span>{notice}</span>
+          <button onClick={() => setNotice('')}>
+            <X size={15} />
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function NavButton({ icon, label, count, active, onClick }) {
+  return (
+    <button className={`nav-item ${active ? 'active' : ''}`} onClick={onClick}>
+      {icon}
+      <span>{label}</span>
+      {count > 0 && <small>{count}</small>}
+    </button>
+  )
+}
+
+function StatCard({ title, value, change, icon, tone, trend, helper }) {
+  return (
+    <div className="stat-card">
+      <div className="stat-top">
+        <span>{title}</span>
+        <span className={`stat-icon ${tone}`}>{icon}</span>
+      </div>
+      <div className="stat-value-row">
+        <strong>{value}</strong>
+        {change && (
+          <span className={`stat-change ${trend}`}>
+            {trend === 'up' ? <ArrowUpRight size={13} /> : <ArrowDownRight size={13} />} {change}
+          </span>
+        )}
+      </div>
+      <div className="stat-helper">{helper}</div>
+    </div>
+  )
+}
+
+function Status({ status }) {
+  return (
+    <span className={`status-chip ${status === 'Menunggu' ? 'waiting' : status === 'Diproses' ? 'progress' : 'done'}`}>
+      <i />
+      {status}
+    </span>
+  )
+}
+
+function Category({ category }) {
+  return (
+    <span className="category-chip">
+      <i className={category === 'organik' ? 'organic' : 'inorganic'} />
+      {category || '—'}
+    </span>
+  )
+}
+
+function Severity({ severity }) {
+  return <span className={`severity-chip ${severity || 'sedang'}`}>{severity || 'sedang'}</span>
+}
+
+function pageTitle(page) {
+  return (
+    {
+      overview: 'Ikhtisar Kampus',
+      reports: 'Dashboard Admin',
+      map: 'Peta Sebaran Unklab',
+      status: 'Cek Status & Chatbot AI',
+      admin: 'Admin'
+    }[page] || 'Ikhtisar'
+  )
+}
+
+function Modal({ title, subtitle, onClose, children, wide }) {
+  return (
+    <div className="modal-backdrop" onMouseDown={e => e.target === e.currentTarget && onClose()}>
+      <div className={`modal ${wide ? 'modal-wide' : ''}`}>
+        <div className="modal-header">
+          <div>
+            <h2>{title}</h2>
+            <p>{subtitle}</p>
+          </div>
+          <button className="icon-btn" onClick={onClose}>
+            <X size={18} />
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  )
+}
+
+// Pemilih titik koordinat pada peta Kampus Universitas Klabat (mengizinkan klik di luar batas untuk menguji Skenario 5)
+function LocationPicker({ coords, onPick }) {
+  const position = coords ? [coords.latitude, coords.longitude] : UNKLAB_CENTER
+  function Pick() {
+    useMapEvents({
+      click(e) {
+        const p = { latitude: e.latlng.lat, longitude: e.latlng.lng }
+        onPick(p)
+      }
+    })
+    return null
+  }
+  return (
+    <MapContainer
+      center={UNKLAB_CENTER}
+      zoom={16}
+      maxBounds={MAP_VIEW_BOUNDS}
+      maxBoundsViscosity={0.8}
+      zoomControl={false}
+      className="picker-leaflet"
+    >
+      <TileLayer attribution="&copy; OpenStreetMap" url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+      <Rectangle
+        bounds={UNKLAB_BOUNDS}
+        pathOptions={{ color: '#2b6e46', weight: 2, dashArray: '6 4', fillOpacity: 0.06 }}
+      />
+      <Pick />
+      {position && <Marker position={position} />}
+    </MapContainer>
+  )
+}
+
+function ReportsPage({
+  reports,
+  selected,
+  setSelected,
+  statusFilter,
+  setStatusFilter,
+  categoryFilter,
+  setCategoryFilter,
+  severityFilter,
+  setSeverityFilter,
+  query,
+  setQuery,
+  onDetail,
+  onMakeSummary,
+  isSummaryLoading
+}) {
+  return (
+    <div className="page-stack">
+      <div className="page-heading">
+        <div>
+          <p className="eyebrow">DASHBOARD ADMIN KEBERSIHAN UNIVERSITAS KLABAT</p>
+          <h1>Daftar laporan & validasi AI</h1>
+          <p>Filter laporan berdasarkan status, kategori, dan tingkat keparahan, serta validasi hasil AI.</p>
+        </div>
+        <button className="btn btn-primary" disabled={isSummaryLoading} onClick={onMakeSummary}>
+          <Sparkles size={16} /> {isSummaryLoading ? 'Menyusun ringkasan...' : 'Buat Ringkasan AI'}
+        </button>
+      </div>
+
+      <div className="filter-row">
+        <div className="search-field">
+          <Search size={16} />
+          <input
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            placeholder="Cari kode laporan, deskripsi, atau gedung kampus..."
+          />
+        </div>
+        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
+          {['Semua status', ...statuses].map(x => (
+            <option key={x} value={x}>
+              {x}
+            </option>
+          ))}
+        </select>
+        <select value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)}>
+          <option value="Semua kategori">Semua kategori</option>
+          <option value="organik">Organik</option>
+          <option value="anorganik">Anorganik</option>
+        </select>
+        <select value={severityFilter} onChange={e => setSeverityFilter(e.target.value)}>
+          <option value="Semua tingkat">Semua tingkat</option>
+          {['rendah', 'sedang', 'tinggi'].map(x => (
+            <option key={x} value={x}>
+              {x[0].toUpperCase() + x.slice(1)}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <section className="panel report-list-panel">
+        <div className="report-table-wrap">
+          <table className="report-table report-table-full">
+            <thead>
+              <tr>
+                <th>KODE LAPORAN</th>
+                <th>LOKASI KAMPUS & DESKRIPSI</th>
+                <th>KATEGORI AI</th>
+                <th>KEPARAHAN</th>
+                <th>VALIDASI HITL</th>
+                <th>STATUS</th>
+                <th>WAKTU</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {reports.map(r => (
+                <tr
+                  key={r.id}
+                  className={selected?.id === r.id ? 'selected-row' : ''}
+                  onClick={() => setSelected(r)}
+                >
+                  <td>
+                    <strong className="report-code">{r.report_code}</strong>
+                  </td>
+                  <td className="desc-cell">
+                    <strong>{unklabZoneName(r)}</strong> — {r.description}
+                  </td>
+                  <td>
+                    <Category category={r.analysis?.category} />
+                  </td>
+                  <td>
+                    <Severity severity={r.analysis?.severity} />
+                  </td>
+                  <td className="muted-cell">
+                    {r.analysis?.is_validated ? '✓ Tervalidasi' : `${Math.round((r.analysis?.confidence_score || 0.9) * 100)}% (Belum)`}
+                  </td>
+                  <td>
+                    <Status status={r.status} />
+                  </td>
+                  <td className="muted-cell">{dateLabel(r.created_at)}</td>
+                  <td>
+                    <button
+                      className="row-arrow"
+                      onClick={e => {
+                        e.stopPropagation()
+                        setSelected(r)
+                        onDetail()
+                      }}
+                    >
+                      <ArrowRight size={15} />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {!reports.length && <div className="empty-state">Tidak ada laporan yang sesuai dengan filter.</div>}
+        </div>
+      </section>
+
+      {selected ? (
+        <div className="selected-report-card">
+          <div>
+            <div className="selected-report-title">
+              <strong>{selected.report_code}</strong>
+              <Status status={selected.status} />
+            </div>
+            <p>{selected.description}</p>
+            <span>
+              <MapPin size={13} /> {unklabZoneName(selected)} · {dateLabel(selected.created_at)}
+            </span>
+          </div>
+          <button className="btn btn-primary" onClick={onDetail}>
+            Validasi AI & Ubah Status <ArrowRight size={15} />
+          </button>
+        </div>
+      ) : (
+        <div className="empty-state panel">Pilih salah satu laporan di atas untuk memvalidasi hasil AI atau memperbarui status.</div>
+      )}
+    </div>
+  )
+}
+
+function StatusPage({
+  reportCode,
+  setReportCode,
+  lookup,
+  report,
+  chat,
+  newMessage,
+  setNewMessage,
+  sendChat,
+  isChatLoading
+}) {
+  return (
+    <div className="page-stack status-page">
+      <div className="page-heading">
+        <div>
+          <p className="eyebrow">LAYANAN PELAPOR KAMPUS UNIVERSITAS KLABAT</p>
+          <h1>Cek status laporan & Chatbot Solusi AI</h1>
+          <p>Masukkan kode laporan unik Anda untuk memantau status penanganan dan berkonsultasi dengan asisten AI.</p>
+        </div>
+      </div>
+
+      <form className="lookup-form" onSubmit={lookup}>
+        <div>
+          <label>Kode laporan unik</label>
+          <div className="lookup-input">
+            <Search size={17} />
+            <input
+              value={reportCode}
+              onChange={e => setReportCode(e.target.value)}
+              placeholder="Contoh: TT-2026-XXXX"
+            />
+            <button type="submit" className="btn btn-primary">
+              Cek status <ArrowRight size={15} />
+            </button>
+          </div>
+        </div>
+      </form>
+
+      {report ? (
+        <div className="status-grid">
+          <section className="panel status-detail">
+            <div className="panel-heading">
+              <div>
+                <span className="eyebrow">HASIL ANALISIS AI & STATUS LAPORAN</span>
+                <h2>{report.report_code}</h2>
+              </div>
+              <Status status={report.status} />
+            </div>
+            <p className="status-description">{report.description}</p>
+            <div className="detail-tags">
+              <Category category={report.analysis?.category} />
+              <Severity severity={report.analysis?.severity} />
+              <span className="confidence">
+                <Sparkles size={14} /> Confidence {Math.round((report.analysis?.confidence_score || 0.9) * 100)}%
+                {report.analysis?.is_validated ? ' · Tervalidasi Admin' : ''}
+              </span>
+            </div>
+
+            <div className="timeline">
+              {statuses.map((s, i) => (
+                <div className={`timeline-step ${statuses.indexOf(report.status) >= i ? 'complete' : ''}`} key={s}>
+                  <span>{statuses.indexOf(report.status) > i ? <Check size={13} /> : i + 1}</span>
+                  <div>
+                    <strong>{s}</strong>
+                    <small>
+                      {i === 0
+                        ? dateLabel(report.created_at)
+                        : statuses.indexOf(report.status) >= i
+                        ? 'Telah diperbarui petugas kebersihan Unklab'
+                        : 'Menunggu tindak lanjut petugas'}
+                    </small>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="location-note">
+              <MapPin size={16} />
+              <span>
+                {report.latitude.toFixed(5)}, {report.longitude.toFixed(5)}
+              </span>
+              <span>{unklabZoneName(report)}</span>
+            </div>
+          </section>
+
+          <section className="panel chat-panel">
+            <div className="chat-heading">
+              <div className="bot-avatar">
+                <Bot size={19} />
+              </div>
+              <div>
+                <strong>Chatbot Solusi Kebersihan Unklab</strong>
+                <small>
+                  <i /> Konteks: {report.analysis?.category || 'sampah'} ({report.analysis?.severity || 'sedang'})
+                </small>
+              </div>
+              <Sparkles size={16} />
+            </div>
+
+            <div className="chat-messages">
+              {chat.map((m, i) => (
+                <div key={i} className={`chat-message ${m.sender}`}>
+                  {m.sender === 'ai' && (
+                    <span className="chat-mini-icon">
+                      <Bot size={13} />
+                    </span>
+                  )}
+                  <p>{m.message}</p>
+                </div>
+              ))}
+              {isChatLoading && (
+                <div className="chat-message ai">
+                  <span className="chat-mini-icon">
+                    <Bot size={13} />
+                  </span>
+                  <p>Menyusun saran penanganan...</p>
+                </div>
+              )}
+            </div>
+
+            <div className="chat-suggestions">
+              <button onClick={() => setNewMessage('Bagaimana cara memilah dan menangani sampah ini di kampus?')}>
+                Cara pemilahan
+              </button>
+              <button onClick={() => setNewMessage('Kapan laporan status ini ditangani petugas Unklab?')}>
+                Status penanganan
+              </button>
+            </div>
+
+            <div className="chat-input">
+              <input
+                value={newMessage}
+                onChange={e => setNewMessage(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), sendChat())}
+                placeholder="Tanyakan seputar penanganan sampah ini..."
+              />
+              <button onClick={sendChat} disabled={isChatLoading}>
+                <Send size={16} />
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : (
+        <div className="status-empty">
+          <div>
+            <Search size={22} />
+          </div>
+          <strong>Masukkan kode laporan unik Anda</strong>
+          <p>Kode laporan diberikan secara otomatis setelah foto titik sampah di Universitas Klabat berhasil dianalisis.</p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+export default App
