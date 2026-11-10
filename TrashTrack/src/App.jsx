@@ -269,6 +269,7 @@ function App() {
   }
 
   // Pemilihan berkas foto dengan validasi format JPG/PNG (Skenario 2) & ukuran <= 5 MB (Skenario 3)
+  // Mengonversi foto ke Data URL terkompresi agar gambar yang diunggah pengguna selalu tersimpan & tampil permanen
   const handleFileChange = e => {
     const f = e.target.files?.[0]
     if (!f) {
@@ -291,7 +292,28 @@ function App() {
       return
     }
     setFile(f)
-    setPreviewUrl(URL.createObjectURL(f))
+    const reader = new FileReader()
+    reader.onload = () => {
+      const dataUrl = String(reader.result || '')
+      const img = new Image()
+      img.onload = () => {
+        const maxW = 960
+        const scale = img.width > maxW ? maxW / img.width : 1
+        const canvas = document.createElement('canvas')
+        canvas.width = Math.round(img.width * scale)
+        canvas.height = Math.round(img.height * scale)
+        const ctx = canvas.getContext('2d')
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+          setPreviewUrl(canvas.toDataURL('image/jpeg', 0.82))
+        } else {
+          setPreviewUrl(dataUrl)
+        }
+      }
+      img.onerror = () => setPreviewUrl(dataUrl)
+      img.src = dataUrl
+    }
+    reader.readAsDataURL(f)
   }
 
   // Alur Pengiriman Laporan & Analisis Foto (FR-01, FR-02, Gambar 4 & Gambar 5)
@@ -402,6 +424,14 @@ function App() {
           photo_url: previewUrl,
           analysis: aiResult,
           chat_messages: [{ sender: 'ai', message: initialAdvice, created_at: createdAt }]
+        }
+      }
+
+      if (previewUrl && savedReport?.report_code) {
+        try {
+          localStorage.setItem(`unklab_photo_${savedReport.report_code}`, previewUrl)
+        } catch {
+          // Abaikan jika kuota localStorage penuh
         }
       }
 
@@ -1085,6 +1115,17 @@ function App() {
               setReportCode={setReportCode}
               lookup={lookup}
               report={reportLookup}
+              reports={reports}
+              onSelectReport={r => {
+                setReportCode(r.report_code)
+                setReportLookup(r)
+                setSelected(r)
+                const initialHistory =
+                  r.chat_messages?.length > 0
+                    ? r.chat_messages
+                    : [{ sender: 'ai', message: buildInitialAdvice(r.analysis, r) }]
+                setChat(initialHistory)
+              }}
               chat={chat}
               newMessage={newMessage}
               setNewMessage={setNewMessage}
@@ -1321,18 +1362,15 @@ function App() {
           {detailTab === 'Detail laporan' || !isAdmin ? (
             <div className="detail-layout">
               <div className="detail-photo" style={{ overflow: 'hidden', position: 'relative' }}>
-                {selected.photo_url && (selected.photo_url.startsWith('blob:') || selected.photo_url.startsWith('http')) ? (
-                  <img
-                    src={selected.photo_url}
-                    alt={selected.report_code}
-                    style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '14px' }}
-                  />
-                ) : (
-                  <>
-                    <FileImage size={27} />
-                    <span>Foto laporan ({selected.report_code})</span>
-                  </>
-                )}
+                <img
+                  src={resolveReportPhoto(selected)}
+                  alt={selected.report_code}
+                  style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '14px' }}
+                  onError={e => {
+                    e.currentTarget.onerror = null
+                    e.currentTarget.src = FALLBACK_WASTE_SVG
+                  }}
+                />
               </div>
               <div className="detail-info">
                 <div className="detail-status-row">
@@ -1519,6 +1557,71 @@ function Category({ category }) {
 
 function Severity({ severity }) {
   return <span className={`severity-chip ${severity || 'sedang'}`}>{severity || 'sedang'}</span>
+}
+
+function formatInlineMarkdown(str) {
+  if (!str) return null
+  const regex = /(\*\*[^*]+?\*\*|\*[^*\n]+?\*|`[^`\n]+?`)/g
+  const parts = str.split(regex)
+  return parts.map((part, idx) => {
+    if (part.startsWith('**') && part.endsWith('**') && part.length >= 4) {
+      return <strong key={idx}>{part.slice(2, -2)}</strong>
+    }
+    if (part.startsWith('*') && part.endsWith('*') && part.length >= 2) {
+      return <em key={idx}>{part.slice(1, -1)}</em>
+    }
+    if (part.startsWith('`') && part.endsWith('`') && part.length >= 2) {
+      return <code key={idx}>{part.slice(1, -1)}</code>
+    }
+    return part
+  })
+}
+
+function FormattedChatMessage({ content }) {
+  if (!content) return null
+  const text = String(content)
+  const normalized = text
+    .replace(/([^\n])\s+(?=\d+\.\s+\*\*)/g, '$1\n\n')
+    .replace(/([^\n])\s+(?=[-•*]\s+\*\*)/g, '$1\n')
+
+  const paragraphs = normalized.split(/\n\s*\n/)
+
+  return (
+    <div className="formatted-chat-message">
+      {paragraphs.map((p, pIdx) => {
+        const lines = p.split('\n').filter(l => l.trim().length > 0)
+        return (
+          <div key={pIdx} className="chat-paragraph">
+            {lines.map((line, lIdx) => {
+              const trimmed = line.trim()
+              if (/^[-•*]\s+/.test(trimmed) && !trimmed.startsWith('**')) {
+                return (
+                  <div key={lIdx} className="chat-bullet-row">
+                    <span className="chat-bullet-dot">•</span>
+                    <span className="chat-bullet-text">{formatInlineMarkdown(trimmed.replace(/^[-•*]\s+/, ''))}</span>
+                  </div>
+                )
+              }
+              const numMatch = trimmed.match(/^(\d+)\.\s+(.*)$/)
+              if (numMatch) {
+                return (
+                  <div key={lIdx} className="chat-number-row">
+                    <span className="chat-number-idx">{numMatch[1]}.</span>
+                    <span className="chat-number-text">{formatInlineMarkdown(numMatch[2])}</span>
+                  </div>
+                )
+              }
+              return (
+                <p key={lIdx} className="chat-text-line">
+                  {formatInlineMarkdown(line)}
+                </p>
+              )
+            })}
+          </div>
+        )
+      })}
+    </div>
+  )
 }
 
 function pageTitle(page) {
@@ -1728,17 +1831,71 @@ function ReportsPage({
   )
 }
 
+// Resolusi foto laporan agar selalu menampilkan gambar yang diunggah user (termasuk dari cache lokal / database)
+const FALLBACK_WASTE_SVG =
+  'data:image/svg+xml;utf8,' +
+  encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="420" viewBox="0 0 800 420">
+      <defs>
+        <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#dfeee4"/>
+          <stop offset="100%" stop-color="#c6e2cf"/>
+        </linearGradient>
+      </defs>
+      <rect width="800" height="420" fill="url(#bg)"/>
+      <circle cx="680" cy="90" r="110" fill="#b5d8c1" opacity="0.45"/>
+      <path d="M0 320 Q220 270 440 310 T800 295 L800 420 L0 420 Z" fill="#9bc7aa" opacity="0.55"/>
+      <rect x="310" y="135" width="180" height="125" rx="18" fill="#ffffff" opacity="0.92"/>
+      <text x="400" y="202" text-anchor="middle" font-family="Plus Jakarta Sans, sans-serif" font-size="15" font-weight="700" fill="#236343">Foto Titik Sampah</text>
+      <text x="400" y="226" text-anchor="middle" font-family="Plus Jakarta Sans, sans-serif" font-size="12" fill="#587b67">Kampus Universitas Klabat</text>
+    </svg>`
+  )
+
+function resolveReportPhoto(report) {
+  if (!report) return FALLBACK_WASTE_SVG
+  try {
+    const cached = localStorage.getItem(`unklab_photo_${report.report_code}`)
+    if (cached && cached.startsWith('data:image/')) return cached
+  } catch {
+    // Abaikan jika localStorage tidak tersedia
+  }
+  const url = String(report.photo_url || '')
+  if (url.startsWith('data:image/') || url.startsWith('blob:') || url.startsWith('http')) {
+    return url
+  }
+  return FALLBACK_WASTE_SVG
+}
+
 function StatusPage({
   reportCode,
   setReportCode,
   lookup,
   report,
+  reports = [],
+  onSelectReport,
   chat,
   newMessage,
   setNewMessage,
   sendChat,
   isChatLoading
 }) {
+  const [showReportList, setShowReportList] = useState(false)
+  const stepIndex = report ? Math.max(0, statuses.indexOf(report.status)) : 0
+
+  const statusHeadline =
+    report?.status === 'Selesai'
+      ? 'Penanganan selesai'
+      : report?.status === 'Diproses'
+      ? 'Sedang ditangani petugas'
+      : 'Menunggu validasi petugas'
+
+  const statusSubtext =
+    report?.status === 'Selesai'
+      ? 'Titik sampah ini telah dibersihkan dan diverifikasi selesai oleh petugas kebersihan kampus.'
+      : report?.status === 'Diproses'
+      ? 'Petugas kebersihan Universitas Klabat sedang menindaklanjuti laporan di lokasi ini.'
+      : 'Laporan Anda sudah diterima dan akan ditinjau oleh petugas kebersihan kampus.'
+
   return (
     <div className="page-stack status-page">
       <div className="page-heading">
@@ -1751,7 +1908,19 @@ function StatusPage({
 
       <form className="lookup-form" onSubmit={lookup}>
         <div>
-          <label>Kode laporan unik</label>
+          <div className="lookup-label-row">
+            <label>Kode laporan unik</label>
+            {reports.length > 0 && (
+              <button
+                type="button"
+                className="forgot-code-btn"
+                onClick={() => setShowReportList(prev => !prev)}
+              >
+                {showReportList ? 'Sembunyikan daftar laporan' : `Lupa kode laporan? Lihat daftar laporan (${reports.length})`}
+                <ChevronDown size={14} className={showReportList ? 'chev-rotated' : ''} />
+              </button>
+            )}
+          </div>
           <div className="lookup-input">
             <Search size={17} />
             <input
@@ -1763,110 +1932,172 @@ function StatusPage({
               Cek status <ArrowRight size={15} />
             </button>
           </div>
+
+          {showReportList && reports.length > 0 && (
+            <div className="saved-reports-drawer">
+              <p className="saved-reports-hint">
+                Klik salah satu laporan di bawah ini jika Anda lupa kode laporan:
+              </p>
+              <div className="saved-reports-list">
+                {reports.map(item => (
+                  <button
+                    type="button"
+                    key={item.id || item.report_code}
+                    className={`saved-report-item ${report?.report_code === item.report_code ? 'active' : ''}`}
+                    onClick={() => {
+                      onSelectReport?.(item)
+                      setShowReportList(false)
+                    }}
+                  >
+                    <div className="saved-report-left">
+                      <strong className="saved-report-code">{item.report_code}</strong>
+                      <span className="saved-report-desc">
+                        {unklabZoneName(item)} — {item.description || 'Laporan titik sampah'}
+                      </span>
+                    </div>
+                    <div className="saved-report-right">
+                      <Category category={item.analysis?.category} />
+                      <Status status={item.status} />
+                      <small>{dateLabel(item.created_at)}</small>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </form>
 
       {report ? (
         <div className="status-grid">
-          <section className="panel status-detail">
-            <div className="panel-heading">
+          {/* Kartu Kiri: Sesuai Desain Figma (Header, Foto Hasil Upload, Pill Tags, Stepper Horizontal, Kotak Status) */}
+          <section className="panel figma-status-card">
+            <div className="figma-status-header">
               <div>
-                <span className="eyebrow">HASIL ANALISIS AI & STATUS LAPORAN</span>
                 <h2>{report.report_code}</h2>
+                <p className="figma-status-meta">
+                  {unklabZoneName(report)} · {dateLabel(report.created_at)}
+                </p>
               </div>
-              <Status status={report.status} />
-            </div>
-            <p className="status-description">{report.description}</p>
-            <div className="detail-tags">
-              <Category category={report.analysis?.category} />
-              <Severity severity={report.analysis?.severity} />
-              <span className="confidence">
-                <Sparkles size={14} /> Confidence {Math.round((report.analysis?.confidence_score || 0.9) * 100)}%
-                {report.analysis?.is_validated ? ' · Tervalidasi Admin' : ''}
+              <span className="figma-check-badge">
+                {report.analysis?.is_validated ? 'Tervalidasi Admin' : 'Dicek otomatis'}
               </span>
             </div>
 
-            <div className="timeline">
-              {statuses.map((s, i) => (
-                <div className={`timeline-step ${statuses.indexOf(report.status) >= i ? 'complete' : ''}`} key={s}>
-                  <span>{statuses.indexOf(report.status) > i ? <Check size={13} /> : i + 1}</span>
-                  <div>
-                    <strong>{s}</strong>
-                    <small>
-                      {i === 0
-                        ? dateLabel(report.created_at)
-                        : statuses.indexOf(report.status) >= i
-                        ? 'Telah diperbarui petugas kebersihan Unklab'
-                        : 'Menunggu tindak lanjut petugas'}
-                    </small>
-                  </div>
-                </div>
-              ))}
+            <div className="figma-photo-wrap">
+              <img
+                src={resolveReportPhoto(report)}
+                alt={`Foto laporan ${report.report_code}`}
+                className="figma-uploaded-photo"
+                onError={e => {
+                  e.currentTarget.onerror = null
+                  e.currentTarget.src = FALLBACK_WASTE_SVG
+                }}
+              />
             </div>
 
-            <div className="location-note">
-              <MapPin size={16} />
-              <span>
-                {report.latitude.toFixed(5)}, {report.longitude.toFixed(5)}
+            <div className="figma-tags-row">
+              <span className={`figma-tag tag-${report.analysis?.category || 'organik'}`}>
+                {(report.analysis?.category || 'organik').replace(/^./, c => c.toUpperCase())}
               </span>
-              <span>{unklabZoneName(report)}</span>
+              <span className={`figma-tag tag-sev-${report.analysis?.severity || 'sedang'}`}>
+                {(report.analysis?.severity || 'sedang').replace(/^./, c => c.toUpperCase())}
+              </span>
+              <span className="figma-tag tag-confidence">
+                {Math.round((report.analysis?.confidence_score || 0.9) * 100)}% yakin
+              </span>
+            </div>
+
+            <div className="figma-stepper-block">
+              <span className="figma-stepper-label">STATUS PENANGANAN</span>
+              <div className="figma-horizontal-stepper">
+                {statuses.map((s, i) => {
+                  const isCurrent = stepIndex === i
+                  const isDone = stepIndex > i
+                  const stateClass = isCurrent ? 'current' : isDone ? 'done' : 'upcoming'
+                  return (
+                    <div className={`figma-step ${stateClass}`} key={s}>
+                      <div className="figma-step-track">
+                        <span className="figma-step-circle">
+                          {isDone ? <Check size={12} /> : isCurrent ? <i className="figma-step-dot" /> : i + 1}
+                        </span>
+                        {i < statuses.length - 1 && (
+                          <div className={`figma-step-line ${isDone ? 'line-done' : ''}`} />
+                        )}
+                      </div>
+                      <strong className="figma-step-title">{s}</strong>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+
+            <div className="figma-status-callout">
+              <strong>{statusHeadline}</strong>
+              <p>{report.description ? `${report.description} — ${statusSubtext}` : statusSubtext}</p>
             </div>
           </section>
 
-          <section className="panel chat-panel">
-            <div className="chat-heading">
-              <div className="bot-avatar">
-                <Bot size={19} />
+          {/* Kartu Kanan: Chatbot Solusi AI Sesuai Desain Figma */}
+          <section className="panel chat-panel figma-chat-panel">
+            <div className="figma-chat-heading">
+              <div className="figma-chat-title">
+                <Sparkles size={15} />
+                <strong>Chatbot Solusi AI</strong>
               </div>
-              <div>
-                <strong>Chatbot Solusi Kebersihan Unklab</strong>
-                <small>
-                  <i /> Konteks: {report.analysis?.category || 'sampah'} ({report.analysis?.severity || 'sedang'})
-                </small>
-              </div>
-              <Sparkles size={16} />
+              <small className="figma-chat-sub">
+                <i className="active-dot" /> Aktif · Konteks laporan {report.report_code}
+              </small>
             </div>
 
-            <div className="chat-messages">
+            <div className="chat-messages figma-chat-messages">
               {chat.map((m, i) => (
-                <div key={i} className={`chat-message ${m.sender}`}>
-                  {m.sender === 'ai' && (
-                    <span className="chat-mini-icon">
-                      <Bot size={13} />
-                    </span>
+                <div key={i} className={`figma-chat-bubble-row ${m.sender}`}>
+                  {m.sender === 'ai' && i === 0 ? (
+                    <div className="figma-bubble ai-initial">
+                      <strong className="figma-bubble-title">Halo! Saya sudah membaca hasil deteksi foto Anda.</strong>
+                      <FormattedChatMessage content={m.message} />
+                    </div>
+                  ) : (
+                    <div className={`figma-bubble ${m.sender}`}>
+                      <FormattedChatMessage content={m.message} />
+                    </div>
                   )}
-                  <p>{m.message}</p>
                 </div>
               ))}
               {isChatLoading && (
-                <div className="chat-message ai">
-                  <span className="chat-mini-icon">
-                    <Bot size={13} />
-                  </span>
-                  <p>Menyusun saran penanganan...</p>
+                <div className="figma-chat-bubble-row ai">
+                  <div className="figma-bubble ai">
+                    <p>Menyusun saran penanganan...</p>
+                  </div>
                 </div>
               )}
             </div>
 
             <div className="chat-suggestions">
-              <button onClick={() => setNewMessage('Bagaimana cara memilah dan menangani sampah ini di kampus?')}>
-                Cara pemilahan
+              <button type="button" onClick={() => setNewMessage('Apakah sampah ini bisa dijadikan kompos atau didaur ulang?')}>
+                Apakah bisa didaur ulang / kompos?
               </button>
-              <button onClick={() => setNewMessage('Kapan laporan status ini ditangani petugas Unklab?')}>
-                Status penanganan
+              <button type="button" onClick={() => setNewMessage('Bagaimana cara memilah sampah ini di kampus?')}>
+                Cara pemilahan
               </button>
             </div>
 
-            <div className="chat-input">
-              <input
-                value={newMessage}
-                onChange={e => setNewMessage(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), sendChat())}
-                placeholder="Tanyakan seputar penanganan sampah ini..."
-              />
-              <button onClick={sendChat} disabled={isChatLoading}>
-                <Send size={16} />
-              </button>
+            <div className="figma-chat-footer">
+              <div className="figma-chat-input-box">
+                <input
+                  value={newMessage}
+                  onChange={e => setNewMessage(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), sendChat())}
+                  placeholder="Tanyakan cara memilah sampah..."
+                />
+                <button type="button" onClick={sendChat} disabled={isChatLoading}>
+                  <ArrowUpRight size={16} />
+                </button>
+              </div>
+              <small className="figma-chat-disclaimer">
+                Chatbot hanya menjawab pertanyaan seputar sampah & kebersihan kampus.
+              </small>
             </div>
           </section>
         </div>
@@ -1877,6 +2108,16 @@ function StatusPage({
           </div>
           <strong>Masukkan kode laporan unik Anda</strong>
           <p>Kode laporan diberikan secara otomatis setelah foto titik sampah di Universitas Klabat berhasil dianalisis.</p>
+          {reports.length > 0 && (
+            <button
+              type="button"
+              className="btn btn-outline"
+              style={{ marginTop: '8px' }}
+              onClick={() => setShowReportList(true)}
+            >
+              Lihat daftar laporan terbaru ({reports.length})
+            </button>
+          )}
         </div>
       )}
     </div>

@@ -1788,3 +1788,473 @@ button {
     display: block;
   }
 }
+
+/* ============================================================================
+   Desain Figma: Halaman Cek Status Laporan, Daftar Lupa Kode, & Chatbot Solusi AI
+   ============================================================================ */
+.lookup-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 7px;
+  gap: 10px;
+}
+.lookup-label-row label {
+  margin-bottom: 0;
+}
+.forgot-code-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid #d5e6da;
+  background: #f1f8f3;
+  color: #1d754b;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 99px;
+  transition: all 0.15s ease;
+}
+.forgot-code-btn:hover {
+  background: #e3f2e8;
+  border-color: #b7d7c2;
+}
+.chev-rotated {
+  transform: rotate(180deg);
+}
+.saved-reports-drawer {
+  margin-top: 12px;
+  padding-top: 11px;
+  border-top: 1px dashed #e2eae3;
+}
+.saved-reports-hint {
+  margin: 0 0 8px;
+  font-size: 9px;
+  color: #6b7d72;
+  font-weight: 500;
+}
+.saved-reports-list {
+  display: grid;
+  gap: 6px;
+  max-height: 195px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+.saved-report-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+  background: #f9fbf9;
+  border: 1px solid #e4ece5;
+  border-radius: 8px;
+  padding: 8px 11px;
+  transition: all 0.14s ease;
+}
+.saved-report-item:hover,
+.saved-report-item.active {
+  background: #eef7f1;
+  border-color: #9dc8af;
+}
+.saved-report-left {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.saved-report-code {
+  font: 700 10.5px "Plus Jakarta Sans", sans-serif;
+  color: #1d6b44;
+}
+.saved-report-desc {
+  font-size: 9px;
+  color: #5c6e63;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 460px;
+}
+.saved-report-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.saved-report-right small {
+  font-size: 8.5px;
+  color: #88968d;
+}
+
+/* Kartu Kiri Figma: Detail Laporan + Foto Upload + Stepper Horizontal */
+.figma-status-card {
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+}
+.figma-status-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.figma-status-header h2 {
+  font: 700 18px/1.2 "Plus Jakarta Sans", sans-serif;
+  color: #1d2f26;
+  margin: 0;
+  letter-spacing: -0.4px;
+}
+.figma-status-meta {
+  font-size: 9.5px;
+  color: #8a978f;
+  margin: 4px 0 0;
+}
+.figma-check-badge {
+  background: #eef2f5;
+  color: #5c6f7e;
+  font-size: 8.5px;
+  font-weight: 700;
+  padding: 5px 11px;
+  border-radius: 99px;
+  white-space: nowrap;
+}
+.figma-photo-wrap {
+  width: 100%;
+  height: 185px;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #edf3ee;
+  border: 1px solid #e3ebe4;
+}
+.figma-uploaded-photo {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.figma-tags-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.figma-tag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 12px;
+  border-radius: 99px;
+  font-size: 9px;
+  font-weight: 700;
+}
+.figma-tag.tag-organik {
+  background: #e7f6ed;
+  color: #1e7c4d;
+}
+.figma-tag.tag-anorganik {
+  background: #e8f1fa;
+  color: #2c679c;
+}
+.figma-tag.tag-sev-sedang {
+  background: #fef3de;
+  color: #c17718;
+}
+.figma-tag.tag-sev-tinggi {
+  background: #fdeaea;
+  color: #c63c3c;
+}
+.figma-tag.tag-sev-rendah {
+  background: #e9f6ee;
+  color: #2d7d50;
+}
+.figma-tag.tag-confidence {
+  background: #e7f6ed;
+  color: #217b4e;
+}
+
+/* Stepper Horizontal 3 Tahap (Menunggu - Diproses - Selesai) */
+.figma-stepper-block {
+  margin-top: 2px;
+}
+.figma-stepper-label {
+  display: block;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  color: #96a29a;
+  margin-bottom: 10px;
+}
+.figma-horizontal-stepper {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  align-items: start;
+}
+.figma-step {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.figma-step-track {
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+.figma-step-circle {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1.5px solid #dbe3dc;
+  background: #f7f9f7;
+  color: #95a299;
+  font-size: 9px;
+  font-weight: 700;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+.figma-step.current .figma-step-circle {
+  border-color: #f3c892;
+  background: #fff6ea;
+}
+.figma-step-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #e07b19;
+  display: block;
+}
+.figma-step.done .figma-step-circle {
+  border-color: #1d7b51;
+  background: #1d7b51;
+  color: #ffffff;
+}
+.figma-step-line {
+  flex: 1;
+  height: 2px;
+  background: #e4ebe5;
+  margin: 0 8px;
+}
+.figma-step-line.line-done {
+  background: #1d7b51;
+}
+.figma-step-title {
+  font-size: 9.5px;
+  font-weight: 700;
+  color: #9ba69e;
+}
+.figma-step.current .figma-step-title {
+  color: #d97214;
+}
+.figma-step.done .figma-step-title {
+  color: #1d7b51;
+}
+
+/* Kotak Keterangan Status di Bawah Kartu Kiri */
+.figma-status-callout {
+  background: #edf7f0;
+  border: 1px solid #dceee1;
+  border-radius: 9px;
+  padding: 11px 13px;
+  margin-top: auto;
+}
+.figma-status-callout strong {
+  display: block;
+  font-size: 10px;
+  color: #1c6b45;
+  margin-bottom: 3px;
+}
+.figma-status-callout p {
+  margin: 0;
+  font-size: 9px;
+  color: #4f6b5a;
+  line-height: 1.45;
+}
+
+/* Kartu Kanan Figma: Chatbot Solusi AI */
+.figma-chat-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 430px;
+}
+.figma-chat-heading {
+  background: #eaf6ee;
+  border-bottom: 1px solid #dcece1;
+  padding: 13px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.figma-chat-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #1b6943;
+}
+.figma-chat-title strong {
+  font: 700 12px "Plus Jakarta Sans", sans-serif;
+  color: #1b6943;
+}
+.figma-chat-sub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 9px;
+  color: #3a7c59;
+  font-weight: 500;
+}
+.active-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #239b5e;
+  display: inline-block;
+}
+.figma-chat-messages {
+  padding: 15px 16px;
+  gap: 11px;
+  max-height: 290px;
+}
+.figma-chat-bubble-row {
+  display: flex;
+  width: 100%;
+}
+.figma-chat-bubble-row.user {
+  justify-content: flex-end;
+}
+.figma-chat-bubble-row.ai {
+  justify-content: flex-start;
+}
+.figma-bubble {
+  max-width: 86%;
+  padding: 11px 14px;
+  border-radius: 10px;
+  font-size: 9.5px;
+  line-height: 1.55;
+}
+.figma-bubble p {
+  margin: 0;
+}
+.figma-bubble.ai-initial,
+.figma-bubble.ai {
+  background: #f5f7f6;
+  border: 1px solid #eaeeeb;
+  color: #48594f;
+}
+.figma-bubble.ai-initial > .figma-bubble-title,
+.figma-bubble.ai-initial > strong:first-child {
+  display: block;
+  font-size: 10px;
+  font-weight: 700;
+  color: #22352b;
+  margin-bottom: 5px;
+}
+.figma-bubble strong {
+  font-weight: 700;
+  color: #1a2f24;
+}
+.figma-bubble em {
+  font-style: italic;
+}
+.figma-bubble code {
+  background: rgba(0, 0, 0, 0.05);
+  padding: 1px 4px;
+  border-radius: 4px;
+  font-family: ui-monospace, monospace;
+  font-size: 0.9em;
+}
+.figma-bubble.user {
+  background: #1b6943;
+  color: #ffffff;
+  font-weight: 500;
+  border-radius: 10px 10px 3px 10px;
+}
+.figma-bubble.user strong {
+  color: #ffffff;
+  font-weight: 700;
+}
+.figma-bubble.user code {
+  background: rgba(255, 255, 255, 0.2);
+  color: #ffffff;
+}
+
+.formatted-chat-message {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.chat-paragraph {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.chat-text-line {
+  margin: 0;
+  line-height: 1.55;
+}
+.chat-bullet-row,
+.chat-number-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 2px;
+}
+.chat-bullet-dot {
+  color: #1f6b43;
+  font-weight: 700;
+  line-height: 1.5;
+  user-select: none;
+}
+.chat-number-idx {
+  color: #1f6b43;
+  font-weight: 700;
+  min-width: 14px;
+  line-height: 1.5;
+}
+.figma-bubble.user .chat-bullet-dot,
+.figma-bubble.user .chat-number-idx {
+  color: #d1fae5;
+}
+.chat-bullet-text,
+.chat-number-text {
+  flex: 1;
+  line-height: 1.55;
+}
+.figma-chat-footer {
+  padding: 10px 14px 12px;
+  border-top: 1px solid #edf1ed;
+}
+.figma-chat-input-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #dfe7e0;
+  border-radius: 8px;
+  padding: 4px 5px 4px 11px;
+  background: #ffffff;
+}
+.figma-chat-input-box input {
+  flex: 1;
+  border: 0;
+  outline: 0;
+  font-size: 9.5px;
+  color: #3e5046;
+}
+.figma-chat-input-box button {
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 6px;
+  background: #197b51;
+  color: #ffffff;
+  display: grid;
+  place-items: center;
+}
+.figma-chat-disclaimer {
+  display: block;
+  margin-top: 6px;
+  font-size: 8px;
+  color: #95a199;
+}
+
