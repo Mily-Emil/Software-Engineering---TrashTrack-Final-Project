@@ -10,6 +10,7 @@ import {
   CheckCircle2,
   ChevronDown,
   Clock3,
+  Copy,
   FileImage,
   Filter,
   Leaf,
@@ -442,7 +443,7 @@ function App() {
       setReportLookup(savedReport)
       setChat(savedReport.chat_messages)
       setModal('')
-      setPage('status')
+      setPage('analysis')
       setFile(null)
       setNotice(`Laporan berhasil dikirim! Kode laporan Anda: ${savedReport.report_code}`)
     } catch (err) {
@@ -656,6 +657,12 @@ function App() {
             label="Ikhtisar"
             active={page === 'overview'}
             onClick={() => navigate('overview')}
+          />
+          <NavButton
+            icon={<Sparkles size={17} />}
+            label="Hasil analisis AI"
+            active={page === 'analysis'}
+            onClick={() => navigate('analysis')}
           />
           <NavButton
             icon={<MapPin size={17} />}
@@ -1107,6 +1114,31 @@ function App() {
                 </MapContainer>
               </section>
             </div>
+          )}
+
+          {page === 'analysis' && (
+            <AnalysisPage
+              report={selected || reportLookup || reports[0]}
+              reports={reports}
+              onSelectReport={r => {
+                setSelected(r)
+                setReportCode(r.report_code)
+                setReportLookup(r)
+              }}
+              onGoToChatbot={r => {
+                setReportCode(r.report_code)
+                setReportLookup(r)
+                setSelected(r)
+                const initialHistory =
+                  r.chat_messages?.length > 0
+                    ? r.chat_messages
+                    : [{ sender: 'ai', message: buildInitialAdvice(r.analysis, r) }]
+                setChat(initialHistory)
+                setPage('status')
+              }}
+              dateLabel={dateLabel}
+              unklabZoneName={unklabZoneName}
+            />
           )}
 
           {page === 'status' && (
@@ -1628,9 +1660,10 @@ function pageTitle(page) {
   return (
     {
       overview: 'Ikhtisar Kampus',
+      analysis: 'Hasil analisis AI',
       reports: 'Dashboard Admin',
       map: 'Peta Sebaran Unklab',
-      status: 'Cek Status & Chatbot AI',
+      status: 'Cek Status & Chatbot Solusi AI',
       admin: 'Admin'
     }[page] || 'Ikhtisar'
   )
@@ -1864,6 +1897,252 @@ function resolveReportPhoto(report) {
     return url
   }
   return FALLBACK_WASTE_SVG
+}
+
+const DEMO_ANALYSIS_REPORT = {
+  id: 'demo-89a',
+  report_code: 'TT-2026-89A',
+  photo_url: 'https://images.unsplash.com/photo-1542601906990-b4d3fb778b09?w=800&auto=format&fit=crop&q=80',
+  latitude: 1.4172,
+  longitude: 124.9835,
+  description: 'Daun kering dan sisa rumput teridentifikasi di tepi jalur pejalan kaki. Pisahkan dari sampah anorganik dan arahkan ke pengomposan.',
+  status: 'Menunggu',
+  created_at: '2026-11-10T09:41:00.000Z',
+  analysis: {
+    category: 'organik',
+    severity: 'sedang',
+    confidence_score: 94,
+    recommendation: 'Daun kering dan sisa rumput teridentifikasi di tepi jalur pejalan kaki. Pisahkan dari sampah anorganik dan arahkan ke pengomposan.'
+  }
+}
+
+function AnalysisPage({
+  report,
+  reports = [],
+  onSelectReport,
+  onGoToChatbot,
+  dateLabel,
+  unklabZoneName
+}) {
+  const [copied, setCopied] = useState(false)
+  const [showReportList, setShowReportList] = useState(false)
+
+  const active = report || reports[0] || DEMO_ANALYSIS_REPORT
+  const code = active.report_code || 'TT-2026-89A'
+  const confidence = Math.round(Number(active.analysis?.confidence_score ?? 94))
+  const category = (active.analysis?.category || 'organik').toLowerCase()
+  const severity = (active.analysis?.severity || 'sedang').toLowerCase()
+  const recommendation =
+    active.analysis?.recommendation ||
+    active.description ||
+    'Daun kering dan sisa rumput teridentifikasi di tepi jalur pejalan kaki. Pisahkan dari sampah anorganik dan arahkan ke pengomposan.'
+  const locationName = unklabZoneName(active)
+  const isDemo = active.id === 'demo-89a'
+
+  const copyCode = () => {
+    if (navigator?.clipboard?.writeText) {
+      navigator.clipboard.writeText(code)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2200)
+    }
+  }
+
+  const formatWitaDate = dateStr => {
+    try {
+      const d = new Date(dateStr)
+      return (
+        new Intl.DateTimeFormat('id-ID', {
+          day: 'numeric',
+          month: 'short',
+          year: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit'
+        }).format(d) + ' WITA'
+      )
+    } catch {
+      return dateLabel(dateStr)
+    }
+  }
+
+  return (
+    <div className="page-stack figma-analysis-page">
+      <div className="page-heading figma-analysis-heading">
+        <div>
+          <p className="eyebrow">HASIL ANALISIS GEMINI VLM {isDemo ? '— CONTOH TAMPILAN' : ''}</p>
+          <h1>Laporan diterima. Terima kasih sudah peduli.</h1>
+          <p>Simpan kode laporan Anda untuk memantau penanganan dan berdiskusi dengan asisten AI.</p>
+        </div>
+
+        {reports.length > 0 && (
+          <div className="figma-report-picker-wrap">
+            <button
+              type="button"
+              className="btn btn-outline btn-small"
+              onClick={() => setShowReportList(!showReportList)}
+            >
+              <Filter size={14} /> {showReportList ? 'Tutup daftar laporan' : 'Pilih laporan lain'} ({reports.length})
+            </button>
+          </div>
+        )}
+      </div>
+
+      {showReportList && reports.length > 0 && (
+        <div className="status-drawer">
+          <div className="status-drawer-header">
+            <strong>Daftar laporan masuk kampus Unklab</strong>
+            <small>Klik laporan untuk melihat hasil analisis Gemini VLM</small>
+          </div>
+          <div className="status-drawer-grid">
+            {reports.slice(0, 8).map(r => (
+              <button
+                key={r.id}
+                type="button"
+                className={`status-drawer-card ${r.report_code === code ? 'active' : ''}`}
+                onClick={() => {
+                  onSelectReport(r)
+                  setShowReportList(false)
+                }}
+              >
+                <div className="drawer-card-top">
+                  <strong className="drawer-code">{r.report_code}</strong>
+                  <span className={`drawer-badge ${r.analysis?.category || 'anorganik'}`}>
+                    {r.analysis?.category || 'anorganik'}
+                  </span>
+                </div>
+                <div className="drawer-card-loc">
+                  <MapPin size={11} />
+                  <span>{unklabZoneName(r)}</span>
+                </div>
+                <div className="drawer-card-foot">
+                  <small>{dateLabel(r.created_at)}</small>
+                  <span className={`drawer-status ${r.status}`}>{r.status}</span>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="figma-analysis-grid">
+        {/* Kolom Kiri: Hasil Analisis Foto */}
+        <section className="panel figma-analysis-card">
+          <div className="figma-photo-container">
+            <img
+              src={resolveReportPhoto(active)}
+              alt="Foto hasil analisis AI"
+              className="figma-analysis-img"
+              onError={e => {
+                e.currentTarget.onerror = null
+                e.currentTarget.src = FALLBACK_WASTE_SVG
+              }}
+            />
+            <div className="figma-photo-detected-badge">
+              <Check size={14} className="detected-check" />
+              <span>Sampah Terdeteksi</span>
+            </div>
+          </div>
+
+          <div className="figma-analysis-body">
+            <div className="figma-analysis-title-row">
+              <h2>Hasil analisis foto</h2>
+              <div className="figma-confidence-box">
+                <span className="conf-label">CONFIDENCE SCORE</span>
+                <span className="conf-value">{confidence}%</span>
+              </div>
+            </div>
+
+            <div className="figma-chips-row">
+              <span className={`figma-analysis-chip ${category === 'organik' ? 'chip-organic' : 'chip-inorganic'}`}>
+                {category.charAt(0).toUpperCase() + category.slice(1)}
+              </span>
+              <span className={`figma-analysis-chip chip-severity-${severity}`}>
+                {severity.charAt(0).toUpperCase() + severity.slice(1)}
+              </span>
+            </div>
+
+            <p className="figma-analysis-text">{recommendation}</p>
+
+            <div className="figma-analysis-footer-note">
+              Analisis AI bersifat rekomendasi. Menunggu validasi petugas (HITL).
+            </div>
+          </div>
+        </section>
+
+        {/* Kolom Kanan: Kode Laporan + Langkah Selanjutnya */}
+        <div className="figma-analysis-side">
+          <section className="panel figma-code-box-card">
+            <span className="figma-code-eyebrow">KODE LAPORAN ANDA</span>
+            <div className="figma-code-headline">{code}</div>
+
+            <button type="button" className="figma-copy-action-btn" onClick={copyCode}>
+              {copied ? (
+                <>
+                  <Check size={14} className="copy-ok-icon" />
+                  <span>Kode berhasil disalin!</span>
+                </>
+              ) : (
+                <>
+                  <Copy size={14} />
+                  <span>Salin kode laporan</span>
+                </>
+              )}
+            </button>
+
+            <div className="figma-status-chip-row">
+              <span className="figma-status-indicator-badge">
+                <i className="status-dot-orange" /> {active.status || 'Menunggu'}
+              </span>
+            </div>
+
+            <div className="figma-code-meta-info">
+              <div className="meta-location">{locationName} · Universitas Klabat</div>
+              <div className="meta-timestamp">{formatWitaDate(active.created_at)}</div>
+            </div>
+          </section>
+
+          <section className="panel figma-steps-card">
+            <h3>Apa selanjutnya?</h3>
+            <ol className="figma-steps-list">
+              <li>
+                <span className="step-num">1.</span>
+                <span>Petugas memvalidasi hasil deteksi AI.</span>
+              </li>
+              <li>
+                <span className="step-num">2.</span>
+                <span>Titik sampah dijadwalkan untuk dibersihkan.</span>
+              </li>
+              <li>
+                <span className="step-num">3.</span>
+                <span>Pantau progres melalui kode laporan Anda.</span>
+              </li>
+            </ol>
+
+            <button
+              type="button"
+              className="btn btn-primary btn-block figma-cta-chatbot-btn"
+              onClick={() => onGoToChatbot(active)}
+            >
+              Cek status & buka chatbot <ArrowRight size={16} />
+            </button>
+          </section>
+        </div>
+      </div>
+
+      {/* Banner State Bawah */}
+      <div className="figma-vlm-state-banner">
+        <div className="vlm-state-left">
+          <span className="vlm-state-spinner">◌</span>
+          <div>
+            <strong>Menganalisis foto dengan Gemini VLM...</strong>
+            <small>State saat mengirim - biasanya kurang dari 10 detik</small>
+          </div>
+        </div>
+        <div className="vlm-progress-track">
+          <div className="vlm-progress-bar" />
+        </div>
+      </div>
+    </div>
+  )
 }
 
 function StatusPage({
