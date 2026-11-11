@@ -2292,8 +2292,162 @@ button {
   gap: 16px;
 }
 
-.figma-report-picker-wrap {
+/* Minimalist Report Picker Dropdown */
+.minimal-picker-container {
+  position: relative;
   flex-shrink: 0;
+  margin-top: 4px;
+}
+
+.minimal-picker-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: #ffffff;
+  border: 1px solid #d8e4dc;
+  border-radius: 20px;
+  padding: 5px 12px 5px 10px;
+  font-size: 11px;
+  color: #3b5042;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
+}
+
+.minimal-picker-pill:hover {
+  background: #f4f8f5;
+  border-color: #276945;
+  color: #1b4b2f;
+}
+
+.minimal-picker-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #198754;
+}
+
+.minimal-picker-label {
+  color: #6d8274;
+  font-weight: 500;
+  font-size: 10.5px;
+}
+
+.minimal-picker-code {
+  font-weight: 700;
+  color: #173824;
+}
+
+.minimal-picker-chevron {
+  color: #72877a;
+  transition: transform 0.2s ease;
+  margin-left: 2px;
+}
+
+.minimal-picker-chevron.rotate {
+  transform: rotate(180deg);
+}
+
+.minimal-picker-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+  background: transparent;
+}
+
+.minimal-picker-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  width: 280px;
+  max-width: 90vw;
+  background: #ffffff;
+  border: 1px solid #dce6df;
+  border-radius: 12px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.1), 0 2px 6px rgba(0, 0, 0, 0.04);
+  z-index: 60;
+  overflow: hidden;
+  animation: fadeIn 0.15s ease;
+}
+
+.minimal-picker-header {
+  padding: 8px 12px 6px;
+  background: #f8faf8;
+  border-bottom: 1px solid #edf2ee;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: #718578;
+}
+
+.minimal-picker-scroll {
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.minimal-picker-item {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  padding: 7px 10px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  transition: background 0.12s ease;
+}
+
+.minimal-picker-item:hover {
+  background: #f1f6f2;
+}
+
+.minimal-picker-item.selected {
+  background: #eaf3ed;
+}
+
+.minimal-picker-item .item-row-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.minimal-picker-item .item-code {
+  font-size: 11px;
+  font-weight: 700;
+  color: #193e28;
+}
+
+.minimal-picker-item .item-badge {
+  font-size: 9px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.minimal-picker-item .item-badge.organik {
+  background: #e6f4ea;
+  color: #137333;
+}
+
+.minimal-picker-item .item-badge.anorganik {
+  background: #eef2f6;
+  color: #3b5266;
+}
+
+.minimal-picker-item .item-row-sub {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 9.5px;
+  color: #687e70;
+}
+
+.minimal-picker-item .item-sep {
+  opacity: 0.5;
 }
 
 .figma-analysis-grid {

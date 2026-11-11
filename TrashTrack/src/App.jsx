@@ -1974,54 +1974,57 @@ function AnalysisPage({
         </div>
 
         {reports.length > 0 && (
-          <div className="figma-report-picker-wrap">
+          <div className="minimal-picker-container">
             <button
               type="button"
-              className="btn btn-outline btn-small"
+              className="minimal-picker-pill"
               onClick={() => setShowReportList(!showReportList)}
+              aria-label="Pilih laporan"
             >
-              <Filter size={14} /> {showReportList ? 'Tutup daftar laporan' : 'Pilih laporan lain'} ({reports.length})
+              <span className="minimal-picker-dot" />
+              <span className="minimal-picker-label">Laporan:</span>
+              <strong className="minimal-picker-code">{code}</strong>
+              <ChevronDown size={13} className={`minimal-picker-chevron ${showReportList ? 'rotate' : ''}`} />
             </button>
+
+            {showReportList && (
+              <>
+                <div className="minimal-picker-backdrop" onClick={() => setShowReportList(false)} />
+                <div className="minimal-picker-menu">
+                  <div className="minimal-picker-header">
+                    <span>PILIH LAPORAN ({reports.length})</span>
+                  </div>
+                  <div className="minimal-picker-scroll">
+                    {reports.map(r => (
+                      <button
+                        key={r.id || r.report_code}
+                        type="button"
+                        className={`minimal-picker-item ${r.report_code === code ? 'selected' : ''}`}
+                        onClick={() => {
+                          onSelectReport(r)
+                          setShowReportList(false)
+                        }}
+                      >
+                        <div className="item-row-top">
+                          <strong className="item-code">{r.report_code}</strong>
+                          <span className={`item-badge ${(r.analysis?.category || 'anorganik').toLowerCase()}`}>
+                            {r.analysis?.category || 'anorganik'}
+                          </span>
+                        </div>
+                        <div className="item-row-sub">
+                          <span>{unklabZoneName(r)}</span>
+                          <span className="item-sep">•</span>
+                          <span>{r.status || 'Menunggu'}</span>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
           </div>
         )}
       </div>
-
-      {showReportList && reports.length > 0 && (
-        <div className="status-drawer">
-          <div className="status-drawer-header">
-            <strong>Daftar laporan masuk kampus Unklab</strong>
-            <small>Klik laporan untuk melihat hasil analisis Gemini VLM</small>
-          </div>
-          <div className="status-drawer-grid">
-            {reports.slice(0, 8).map(r => (
-              <button
-                key={r.id}
-                type="button"
-                className={`status-drawer-card ${r.report_code === code ? 'active' : ''}`}
-                onClick={() => {
-                  onSelectReport(r)
-                  setShowReportList(false)
-                }}
-              >
-                <div className="drawer-card-top">
-                  <strong className="drawer-code">{r.report_code}</strong>
-                  <span className={`drawer-badge ${r.analysis?.category || 'anorganik'}`}>
-                    {r.analysis?.category || 'anorganik'}
-                  </span>
-                </div>
-                <div className="drawer-card-loc">
-                  <MapPin size={11} />
-                  <span>{unklabZoneName(r)}</span>
-                </div>
-                <div className="drawer-card-foot">
-                  <small>{dateLabel(r.created_at)}</small>
-                  <span className={`drawer-status ${r.status}`}>{r.status}</span>
-                </div>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
 
       <div className="figma-analysis-grid">
         {/* Kolom Kiri: Hasil Analisis Foto */}
