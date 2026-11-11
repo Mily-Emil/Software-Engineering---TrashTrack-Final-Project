@@ -1929,7 +1929,9 @@ function AnalysisPage({
 
   const active = report || reports[0] || DEMO_ANALYSIS_REPORT
   const code = active.report_code || 'TT-2026-89A'
-  const confidence = Math.round(Number(active.analysis?.confidence_score ?? 94))
+  const rawConfidence = Number(active.analysis?.confidence_score ?? 0.94)
+  // confidence_score disimpan sebagai desimal 0–1; konversi ke persen bila perlu
+  const confidence = Math.round(rawConfidence <= 1 ? rawConfidence * 100 : rawConfidence)
   const category = (active.analysis?.category || 'organik').toLowerCase()
   const severity = (active.analysis?.severity || 'sedang').toLowerCase()
   const recommendation =
@@ -2128,20 +2130,6 @@ function AnalysisPage({
               Cek status & buka chatbot <ArrowRight size={16} />
             </button>
           </section>
-        </div>
-      </div>
-
-      {/* Banner State Bawah */}
-      <div className="figma-vlm-state-banner">
-        <div className="vlm-state-left">
-          <span className="vlm-state-spinner">◌</span>
-          <div>
-            <strong>Menganalisis foto dengan Gemini VLM...</strong>
-            <small>State saat mengirim - biasanya kurang dari 10 detik</small>
-          </div>
-        </div>
-        <div className="vlm-progress-track">
-          <div className="vlm-progress-bar" />
         </div>
       </div>
     </div>

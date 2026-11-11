@@ -2756,60 +2756,6 @@ button {
   background: #145233;
 }
 
-/* Bottom State Banner */
-.figma-vlm-state-banner {
-  background: #ffffff;
-  border: 1px solid #e5ede7;
-  border-radius: 10px;
-  padding: 12px 18px;
-  margin-top: 16px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 20px;
-}
-
-.vlm-state-left {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.vlm-state-spinner {
-  font-size: 15px;
-  color: #1e6b43;
-  font-weight: 700;
-  animation: pulseGlow 2s infinite ease-in-out;
-}
-
-.vlm-state-left strong {
-  display: block;
-  font-size: 11px;
-  color: #21352a;
-  font-weight: 700;
-}
-
-.vlm-state-left small {
-  display: block;
-  font-size: 9.5px;
-  color: #728679;
-}
-
-.vlm-progress-track {
-  width: 180px;
-  height: 6px;
-  background: #e3ede6;
-  border-radius: 6px;
-  overflow: hidden;
-}
-
-.vlm-progress-bar {
-  width: 100%;
-  height: 100%;
-  background: #1b6943;
-  border-radius: 6px;
-}
-
 @media (max-width: 920px) {
   .figma-analysis-grid {
     grid-template-columns: 1fr;
