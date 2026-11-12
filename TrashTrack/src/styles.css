@@ -2766,3 +2766,76 @@ button {
   }
 }
 
+
+/* ============================================================
+   Google Maps (pengganti OpenStreetMap) — tampilan Peta & Satelit
+   ============================================================ */
+.gmap-wrap {
+  position: relative;
+  overflow: hidden;
+  z-index: 1;
+}
+.gmap-leaflet-inner {
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+}
+.gmap-type-toggle {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 500;
+  display: inline-flex;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid #d7e2da;
+  border-radius: 6px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.14);
+  overflow: hidden;
+}
+.gmap-type-toggle button {
+  background: transparent;
+  border: 0;
+  padding: 5px 10px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #425449;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.gmap-type-toggle button + button {
+  border-left: 1px solid #e4ece6;
+}
+.gmap-type-toggle button.active {
+  background: #1b6943;
+  color: #ffffff;
+}
+.gmap-badge {
+  position: absolute;
+  bottom: 6px;
+  right: 8px;
+  z-index: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(255, 255, 255, 0.92);
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 600;
+  color: #2f4337;
+  text-decoration: none;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+}
+.gmap-badge:hover {
+  background: #ffffff;
+  color: #1b6943;
+}
+.gmap-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #34a853;
+}
+.pin-picked span {
+  background: #1b6943;
+}

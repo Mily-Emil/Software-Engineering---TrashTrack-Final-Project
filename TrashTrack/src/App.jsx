@@ -27,15 +27,12 @@ import {
   UploadCloud,
   X
 } from 'lucide-react'
-import { MapContainer, Marker, Rectangle, TileLayer, useMapEvents } from 'react-leaflet'
-import L from 'leaflet'
+import CampusGoogleMap from './components/CampusMap'
 import { supabase } from './lib/supabase'
 import {
   ADMIN_DEFAULT_PASSWORD,
   DEFAULT_LOCATION,
-  MAP_VIEW_BOUNDS,
   SEEDED_ADMIN_ACCOUNTS,
-  UNKLAB_BOUNDS,
   UNKLAB_CENTER,
   analyzeWasteClientFallback,
   buildInitialAdvice,
@@ -47,14 +44,6 @@ import {
 } from './lib/ai'
 
 const statuses = ['Menunggu', 'Diproses', 'Selesai']
-
-const iconFor = status =>
-  L.divIcon({
-    className: '',
-    html: `<div class="pin pin-${status === 'Menunggu' ? 'waiting' : status === 'Diproses' ? 'progress' : 'done'}"><span></span></div>`,
-    iconSize: [30, 38],
-    iconAnchor: [15, 36]
-  })
 
 const dateLabel = date =>
   date
@@ -899,29 +888,16 @@ function App() {
                       <ArrowUpRight size={17} />
                     </button>
                   </div>
-                  <MapContainer
-                    center={UNKLAB_CENTER}
-                    zoom={16}
-                    maxBounds={MAP_VIEW_BOUNDS}
-                    maxBoundsViscosity={0.9}
-                    scrollWheelZoom={false}
-                    zoomControl={false}
+                  <CampusGoogleMap
                     className="preview-map"
-                  >
-                    <TileLayer
-                      attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-                      url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                    />
-                    <Rectangle
-                      bounds={UNKLAB_BOUNDS}
-                      pathOptions={{ color: '#2b6e46', weight: 2, dashArray: '6 4', fillOpacity: 0.05 }}
-                    />
-                    {reports
-                      .filter(r => isInUnklabArea(r))
-                      .map(r => (
-                        <Marker key={r.id} position={[r.latitude, r.longitude]} icon={iconFor(r.status)} />
-                      ))}
-                  </MapContainer>
+                    interactive={false}
+                    reports={reports.filter(r => isInUnklabArea(r))}
+                    onMarkerClick={r => {
+                      setSelected(r)
+                      setDetailTab('Detail laporan')
+                      setModal('detail')
+                    }}
+                  />
                   <div className="map-legend">
                     <span>
                       <i className="dot red" />
@@ -1080,38 +1056,16 @@ function App() {
                     <MapPin size={14} /> Klik marker untuk melihat detail laporan & hasil analisis AI
                   </span>
                 </div>
-                <MapContainer
-                  center={UNKLAB_CENTER}
-                  zoom={16}
-                  maxBounds={MAP_VIEW_BOUNDS}
-                  maxBoundsViscosity={0.9}
+                <CampusGoogleMap
                   className="full-map"
-                >
-                  <TileLayer
-                    attribution='&copy; OpenStreetMap'
-                    url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                  />
-                  <Rectangle
-                    bounds={UNKLAB_BOUNDS}
-                    pathOptions={{ color: '#2b6e46', weight: 2, dashArray: '6 4', fillOpacity: 0.04 }}
-                  />
-                  {reports
-                    .filter(r => isInUnklabArea(r))
-                    .map(r => (
-                      <Marker
-                        key={r.id}
-                        position={[r.latitude, r.longitude]}
-                        icon={iconFor(r.status)}
-                        eventHandlers={{
-                          click: () => {
-                            setSelected(r)
-                            setDetailTab('Detail laporan')
-                            setModal('detail')
-                          }
-                        }}
-                      />
-                    ))}
-                </MapContainer>
+                  fillOpacity={0.04}
+                  reports={reports.filter(r => isInUnklabArea(r))}
+                  onMarkerClick={r => {
+                    setSelected(r)
+                    setDetailTab('Detail laporan')
+                    setModal('detail')
+                  }}
+                />
               </section>
             </div>
           )}
@@ -1690,33 +1644,15 @@ function Modal({ title, subtitle, onClose, children, wide }) {
 
 // Pemilih titik koordinat pada peta Kampus Universitas Klabat (mengizinkan klik di luar batas untuk menguji Skenario 5)
 function LocationPicker({ coords, onPick }) {
-  const position = coords ? [coords.latitude, coords.longitude] : UNKLAB_CENTER
-  function Pick() {
-    useMapEvents({
-      click(e) {
-        const p = { latitude: e.latlng.lat, longitude: e.latlng.lng }
-        onPick(p)
-      }
-    })
-    return null
-  }
   return (
-    <MapContainer
-      center={UNKLAB_CENTER}
-      zoom={16}
-      maxBounds={MAP_VIEW_BOUNDS}
-      maxBoundsViscosity={0.8}
-      zoomControl={false}
+    <CampusGoogleMap
       className="picker-leaflet"
-    >
-      <TileLayer attribution="&copy; OpenStreetMap" url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-      <Rectangle
-        bounds={UNKLAB_BOUNDS}
-        pathOptions={{ color: '#2b6e46', weight: 2, dashArray: '6 4', fillOpacity: 0.06 }}
-      />
-      <Pick />
-      {position && <Marker position={position} />}
-    </MapContainer>
+      fillOpacity={0.06}
+      interactive={false}
+      showControls={false}
+      onPick={onPick}
+      pickPosition={coords || { latitude: UNKLAB_CENTER[0], longitude: UNKLAB_CENTER[1] }}
+    />
   )
 }
 
