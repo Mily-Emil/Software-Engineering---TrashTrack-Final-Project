@@ -39,11 +39,14 @@ import {
   buildPeriodSummary,
   generateChatbotAnswer,
   generateInitialAdviceWithAI,
+  generateReportCode,
+  getOrCreateDeviceId,
   isInUnklabArea,
+  stripExifAndCompress,
   unklabZoneName
 } from './lib/ai'
 
-const statuses = ['Menunggu', 'Diproses', 'Selesai']
+const statuses = ['Menunggu', 'Diproses', 'Selesai', 'Ditolak']
 
 const dateLabel = date =>
   date
@@ -96,6 +99,10 @@ function App() {
   const [file, setFile] = useState(null)
   const [previewUrl, setPreviewUrl] = useState('')
   const [coords, setCoords] = useState(DEFAULT_LOCATION)
+  const [locationSource, setLocationSource] = useState('manual')
+  const [locationAccuracy, setLocationAccuracy] = useState(null)
+  const [failedLoginCount, setFailedLoginCount] = useState(0)
+  const [lockoutUntil, setLockoutUntil] = useState(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [submissionTimestamps, setSubmissionTimestamps] = useState([])
   const [reportCode, setReportCode] = useState('')
@@ -216,7 +223,8 @@ function App() {
               ...selected.analysis,
               ...changes.analysis,
               is_validated: true,
-              corrected_by: adminId
+              corrected_by: adminId,
+              corrected_at: new Date().toISOString()
             }
           }
         : {})
@@ -240,14 +248,17 @@ function App() {
         }
       }
       if (changes.analysis) {
+        const updatePayload = {
+          is_validated: true,
+          corrected_by: adminId,
+          corrected_at: new Date().toISOString(),
+          ...(changes.analysis.corrected_category ? { corrected_category: changes.analysis.corrected_category } : {}),
+          ...(changes.analysis.corrected_severity ? { corrected_severity: changes.analysis.corrected_severity } : {}),
+          ...(changes.analysis.admin_notes !== undefined ? { admin_notes: changes.analysis.admin_notes } : {})
+        }
         await supabase
           .from('ai_analysis')
-          .update({
-            category: changes.analysis.category,
-            severity: changes.analysis.severity,
-            is_validated: true,
-            corrected_by: adminId
-          })
+          .update(updatePayload)
           .eq('report_id', selected.id)
       }
     }
@@ -258,17 +269,17 @@ function App() {
     )
   }
 
-  // Pemilihan berkas foto dengan validasi format JPG/PNG (Skenario 2) & ukuran <= 5 MB (Skenario 3)
-  // Mengonversi foto ke Data URL terkompresi agar gambar yang diunggah pengguna selalu tersimpan & tampil permanen
-  const handleFileChange = e => {
+  // Pemilihan berkas foto dengan validasi format JPG/PNG/WEBP & ukuran <= 5 MB (Tema 6 & 11)
+  // Menghapus metadata EXIF otomatis melalui Canvas agar privasi terlindungi
+  const handleFileChange = async e => {
     const f = e.target.files?.[0]
     if (!f) {
       setFile(null)
       setPreviewUrl('')
       return
     }
-    if (!['image/jpeg', 'image/png'].includes(f.type)) {
-      setNotice('Format berkas ditolak. Unggah foto berformat JPG atau PNG.')
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(f.type)) {
+      setNotice('Format berkas ditolak. Hanya file JPG, PNG, atau WEBP yang diperbolehkan.')
       e.target.value = ''
       setFile(null)
       setPreviewUrl('')
@@ -281,43 +292,34 @@ function App() {
       setPreviewUrl('')
       return
     }
-    setFile(f)
-    const reader = new FileReader()
-    reader.onload = () => {
-      const dataUrl = String(reader.result || '')
-      const img = new Image()
-      img.onload = () => {
-        const maxW = 960
-        const scale = img.width > maxW ? maxW / img.width : 1
-        const canvas = document.createElement('canvas')
-        canvas.width = Math.round(img.width * scale)
-        canvas.height = Math.round(img.height * scale)
-        const ctx = canvas.getContext('2d')
-        if (ctx) {
-          ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
-          setPreviewUrl(canvas.toDataURL('image/jpeg', 0.82))
-        } else {
-          setPreviewUrl(dataUrl)
-        }
-      }
-      img.onerror = () => setPreviewUrl(dataUrl)
-      img.src = dataUrl
+
+    try {
+      const { file: cleanFile, previewUrl: cleanUrl } = await stripExifAndCompress(f)
+      setFile(cleanFile)
+      setPreviewUrl(cleanUrl)
+    } catch {
+      setFile(f)
+      const reader = new FileReader()
+      reader.onload = () => setPreviewUrl(String(reader.result || ''))
+      reader.readAsDataURL(f)
     }
-    reader.readAsDataURL(f)
   }
 
-  // Alur Pengiriman Laporan & Analisis Foto (FR-01, FR-02, Gambar 4 & Gambar 5)
+  // Alur Pengiriman Laporan & Analisis Foto (Tema 1, 2, 3, 4, 8, 9, 11)
   const handleReport = async event => {
     event.preventDefault()
     if (isSubmitting) return
 
     const form = new FormData(event.currentTarget)
-    const description = String(form.get('description') || '').trim() || 'Laporan titik sampah di lingkungan kampus Universitas Klabat.'
+    const rawDesc = String(form.get('description') || '').trim()
+    const description = (rawDesc || 'Laporan titik sampah di lingkungan kampus Universitas Klabat.').slice(0, 500)
     const coordsNow = coords || DEFAULT_LOCATION
+    const zoneNow = unklabZoneName(coordsNow)
+    const deviceId = getOrCreateDeviceId()
 
-    // Tahap 1 Validasi Masukan SEBELUM memanggil AI (Gambar 4 & Skenario 2, 3, 5, 6)
-    if (!file || !['image/jpeg', 'image/png'].includes(file.type)) {
-      setNotice('Format berkas ditolak. Unggah foto berformat JPG atau PNG.')
+    // Validasi Masukan SEBELUM memanggil AI (Tema 11)
+    if (!file || !['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+      setNotice('Format berkas ditolak. Unggah foto berformat JPG, PNG, atau WEBP.')
       return
     }
     if (file.size > 5 * 1024 * 1024) {
@@ -332,7 +334,7 @@ function App() {
     const oneHourAgo = Date.now() - 3600000
     const recentSubmissions = submissionTimestamps.filter(ts => ts >= oneHourAgo)
     if (recentSubmissions.length >= 5) {
-      setNotice('Batas 5 laporan per jam tercapai. Silakan coba lagi nanti.')
+      setNotice('Batas 5 laporan per jam tercapai untuk perangkat Anda. Silakan coba lagi nanti.')
       return
     }
 
@@ -340,13 +342,17 @@ function App() {
     try {
       let savedReport = null
 
-      // Prioritas 1: Kirim ke Server Edge Function (memvalidasi IP, memanggil Gemini Vision & Chatbot awal di server)
+      // Prioritas 1: Kirim ke Server Edge Function jika tersedia
       if (supabase) {
         const body = new FormData()
         body.append('photo', file)
         body.append('latitude', String(coordsNow.latitude))
         body.append('longitude', String(coordsNow.longitude))
         body.append('description', description)
+        body.append('location_source', locationSource)
+        if (locationAccuracy) body.append('location_accuracy', String(locationAccuracy))
+        body.append('zone_name', zoneNow)
+        body.append('device_id', deviceId)
 
         const { data: edgeData, error: edgeError } = await supabase.functions.invoke('submit-report', { body })
         if (!edgeError && edgeData?.report_code) {
@@ -357,30 +363,42 @@ function App() {
             latitude: coordsNow.latitude,
             longitude: coordsNow.longitude,
             description,
+            zone_name: zoneNow,
+            location_source: locationSource,
+            location_accuracy: locationAccuracy,
             status: edgeData.status || 'Menunggu',
+            needs_review: Boolean(edgeData.needs_review),
             created_at: edgeData.created_at || new Date().toISOString(),
             photo_url: previewUrl || edgeData.photo_url,
             analysis: edgeData.analysis,
             chat_messages: [{ sender: 'ai', message: initialMsg, created_at: new Date().toISOString() }]
           }
-        } else if (edgeError && edgeError.message && !/not_found|404|failed to send|edge function/i.test(edgeError.message)) {
-          setNotice(edgeError.message)
-          return
         }
       }
 
-      // Prioritas 2: Jika Edge Function belum di-deploy, jalankan analisis dengan batas 10 detik + simpan via RPC database Supabase
+      // Prioritas 2: Analisis Gemini VLM / Fallback & Simpan via RPC Supabase
+      // Tema 1: Laporan TETAP DISIMPAN walaupun AI mendeteksi is_waste: false (needs_review = true)
       if (!savedReport) {
-        const aiResult = await analyzeWasteClientFallback(file, description)
-        if (!aiResult || !aiResult.is_waste) {
-          setNotice('Laporan ditolak: Foto tidak terdeteksi berisi sampah.')
-          return
+        let aiResult = null
+        try {
+          aiResult = await analyzeWasteClientFallback(file, description)
+        } catch {
+          // Jika AI error, fallback ke objek pending review agar laporan TIDAK HILANG (Tema 1)
+          aiResult = {
+            is_waste: true,
+            category: 'anorganik',
+            severity: 'sedang',
+            confidence_score: 0.65,
+            needs_review: true,
+            detected_notes: 'Analisis AI tidak selesai dalam batas waktu. Laporan masuk antrean validasi manual admin.',
+            is_validated: false
+          }
         }
 
         const initialAdvice = await generateInitialAdviceWithAI(aiResult, coordsNow)
-        const fallbackCode = `TT-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 8999)}`
-        let reportId = fallbackCode
-        let finalCode = fallbackCode
+        const generatedCode = generateReportCode()
+        let reportId = generatedCode
+        let finalCode = generatedCode
         let createdAt = new Date().toISOString()
 
         if (supabase) {
@@ -390,7 +408,11 @@ function App() {
             p_longitude: coordsNow.longitude,
             p_description: description,
             p_analysis: aiResult,
-            p_initial_advice: initialAdvice
+            p_initial_advice: initialAdvice,
+            p_location_source: locationSource,
+            p_location_accuracy: locationAccuracy,
+            p_zone_name: zoneNow,
+            p_device_id: deviceId
           })
           if (rpcError && /batas 5 laporan|luar area|ditolak/i.test(rpcError.message)) {
             setNotice(rpcError.message)
@@ -409,7 +431,11 @@ function App() {
           latitude: coordsNow.latitude,
           longitude: coordsNow.longitude,
           description,
+          zone_name: zoneNow,
+          location_source: locationSource,
+          location_accuracy: locationAccuracy,
           status: 'Menunggu',
+          needs_review: Boolean(aiResult.needs_review),
           created_at: createdAt,
           photo_url: previewUrl,
           analysis: aiResult,
@@ -434,9 +460,14 @@ function App() {
       setModal('')
       setPage('analysis')
       setFile(null)
-      setNotice(`Laporan berhasil dikirim! Kode laporan Anda: ${savedReport.report_code}`)
+
+      if (savedReport.needs_review) {
+        setNotice(`Laporan berhasil dikirim (${savedReport.report_code}). Memerlukan verifikasi lanjutan oleh petugas kebersihan kampus.`)
+      } else {
+        setNotice(`Laporan berhasil dikirim! Kode laporan Anda: ${savedReport.report_code}`)
+      }
     } catch (err) {
-      setNotice(err instanceof Error ? err.message : 'Gagal menganalisis foto. Silakan kirim ulang.')
+      setNotice(err instanceof Error ? err.message : 'Gagal mengirim laporan. Silakan coba kembali.')
     } finally {
       setIsSubmitting(false)
     }
@@ -484,11 +515,17 @@ function App() {
     setNotice('Laporan tidak ditemukan. Periksa kembali kode laporan Anda.')
   }
 
-  // Chatbot Solusi (FR-04, Skenario 13 & 14) dengan penyimpanan ke Chat_Messages
+  // Chatbot Solusi (Tema 5: Batas 10 pesan per laporan & maks 300 char)
   const sendChat = async () => {
     if (!newMessage.trim() || isChatLoading) return
     const activeReport = reportLookup || selected
-    const userText = newMessage.trim()
+    const userMsgCount = chat.filter(m => m.sender === 'user').length
+    if (userMsgCount >= 10) {
+      setNotice('Batas maksimal 10 pertanyaan per laporan telah tercapai.')
+      return
+    }
+
+    const userText = newMessage.trim().slice(0, 300)
     const nextHistory = [...chat, { sender: 'user', message: userText }]
     setChat(nextHistory)
     setNewMessage('')
@@ -525,19 +562,27 @@ function App() {
         if (reportLookup?.id === activeReport.id) setReportLookup(updatedReport)
         setReports(prev => prev.map(r => (r.id === activeReport.id ? updatedReport : r)))
       }
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : 'Gagal mengirim pesan chat.')
     } finally {
       setIsChatLoading(false)
     }
   }
 
-  // Login Admin (FR-06, Skenario 16 & 17) — Mendukung Supabase Auth & Seed Akun Kelompok
+  // Login Admin (Tema 10: Proteksi Brute-Force 5x Percobaan & Sesi Terbatas)
   const login = async e => {
     e.preventDefault()
+
+    if (lockoutUntil && Date.now() < lockoutUntil) {
+      const waitMin = Math.ceil((lockoutUntil - Date.now()) / 60000)
+      setNotice(`Akun terkunci sementara karena terlalu banyak percobaan gagal. Silakan tunggu ${waitMin} menit lagi.`)
+      return
+    }
+
     const fd = new FormData(e.currentTarget)
     const emailInput = String(fd.get('email') || loginEmail || '').trim().toLowerCase()
     const passwordInput = String(fd.get('password') || loginPassword || '')
 
-    // 1. Cek apakah sesuai dengan akun Admin Kelompok pada Seed Basis Data
     const seededMatch = SEEDED_ADMIN_ACCOUNTS.find(a => a.email.toLowerCase() === emailInput)
 
     if (supabase) {
@@ -558,7 +603,9 @@ function App() {
         }
         setIsAdmin(true)
         setAdminProfile(resolvedProfile)
-        sessionStorage.setItem('unklab_admin_profile', JSON.stringify(resolvedProfile))
+        setFailedLoginCount(0)
+        setLockoutUntil(null)
+        sessionStorage.setItem('unklab_admin_profile', JSON.stringify({ ...resolvedProfile, login_at: Date.now() }))
         setLoginPassword('')
         setModal('')
         setPage('reports')
@@ -567,11 +614,13 @@ function App() {
       }
     }
 
-    // 2. Verifikasi Seed Basis Data Kelompok (aktif meskipun email confirmation belum dimatikan di dashboard)
+    // 2. Verifikasi Seed Basis Data Kelompok
     if (seededMatch && passwordInput === ADMIN_DEFAULT_PASSWORD) {
       setIsAdmin(true)
       setAdminProfile(seededMatch)
-      sessionStorage.setItem('unklab_admin_profile', JSON.stringify(seededMatch))
+      setFailedLoginCount(0)
+      setLockoutUntil(null)
+      sessionStorage.setItem('unklab_admin_profile', JSON.stringify({ ...seededMatch, login_at: Date.now() }))
       setLoginPassword('')
       setModal('')
       setPage('reports')
@@ -579,7 +628,15 @@ function App() {
       return
     }
 
-    setNotice('Login ditolak: Email atau kata sandi salah.')
+    const nextFails = failedLoginCount + 1
+    setFailedLoginCount(nextFails)
+    if (nextFails >= 5) {
+      const lockTime = Date.now() + 15 * 60 * 1000
+      setLockoutUntil(lockTime)
+      setNotice('5 kali percobaan login gagal berturut-turut. Akses login dibekukan selama 15 menit demi keamanan.')
+    } else {
+      setNotice(`Login ditolak: Email atau kata sandi salah. Percobaan tersisa: ${5 - nextFails} kali.`)
+    }
   }
 
   // Ringkasan Laporan dengan AI (FR-09, Tabel 3, Skenario 22)
@@ -1176,11 +1233,14 @@ function App() {
                     navigator.geolocation?.getCurrentPosition(
                       pos => {
                         const p = { latitude: pos.coords.latitude, longitude: pos.coords.longitude }
+                        const acc = Math.round(pos.coords.accuracy || 0)
                         setCoords(p)
+                        setLocationSource('gps')
+                        setLocationAccuracy(acc)
                         if (!isInUnklabArea(p)) {
                           setNotice('Peringatan: Koordinat GPS berada di luar area kampus Universitas Klabat.')
                         } else {
-                          setNotice(`Lokasi GPS terdeteksi di ${unklabZoneName(p)}.`)
+                          setNotice(`Lokasi GPS terdeteksi di ${unklabZoneName(p)} (Akurasi: ±${acc}m).`)
                         }
                       },
                       () => setNotice('Izin lokasi GPS ditolak/tidak tersedia. Silakan pilih titik langsung pada peta di bawah.')
@@ -1197,6 +1257,8 @@ function App() {
                 coords={coords}
                 onPick={p => {
                   setCoords(p)
+                  setLocationSource('manual')
+                  setLocationAccuracy(null)
                   if (!isInUnklabArea(p)) {
                     setNotice('Titik yang dipilih berada di luar batas kampus Universitas Klabat.')
                   }
@@ -1209,12 +1271,13 @@ function App() {
 
             <div className="field">
               <label htmlFor="desc">
-                Deskripsi patokan lokasi <span>Opsional</span>
+                Deskripsi patokan lokasi <span>Opsional (maks. 500 karakter)</span>
               </label>
               <textarea
                 id="desc"
                 name="description"
                 rows="3"
+                maxLength={500}
                 placeholder="Contoh: Tumpukan sampah plastik/daun di dekat Student Center atau Gedung Kuliah GK..."
               />
             </div>
@@ -1366,18 +1429,24 @@ function App() {
                     {selected.analysis?.is_validated ? ' (Tervalidasi Admin)' : ''}
                   </span>
                 </div>
-                <h3>{selected.description}</h3>
+                <h3>{selected.description || 'Laporan titik sampah di lingkungan Universitas Klabat'}</h3>
                 <p>
-                  <MapPin size={14} /> {unklabZoneName(selected)} ({selected.latitude.toFixed(5)},{' '}
+                  <MapPin size={14} /> {selected.zone_name || unklabZoneName(selected)} ({selected.latitude.toFixed(5)},{' '}
                   {selected.longitude.toFixed(5)})
                 </p>
+                <div className="location-meta-chip">
+                  <span>Sumber: <strong>{selected.location_source === 'gps' ? 'GPS Perangkat' : 'Pilihan Peta Kampus'}</strong></span>
+                  {selected.location_accuracy && <span>Akurasi: ±{selected.location_accuracy}m</span>}
+                  {selected.needs_review && <span className="review-badge">Perlu Review Khusus</span>}
+                </div>
                 <div className="detail-tags">
-                  <Category category={selected.analysis?.category} />
-                  <Severity severity={selected.analysis?.severity} />
+                  <Category category={selected.analysis?.corrected_category || selected.analysis?.category} />
+                  <Severity severity={selected.analysis?.corrected_severity || selected.analysis?.severity} />
+                  {selected.analysis?.is_validated && <span className="hitl-badge">Terkoreksi Admin</span>}
                 </div>
 
                 {isAdmin ? (
-                  <div className="field">
+                  <div className="field" style={{ marginTop: '12px' }}>
                     <label>Perbarui status penanganan</label>
                     <select
                       className="text-input"
@@ -1418,62 +1487,88 @@ function App() {
                   <Bot size={21} />
                 </div>
                 <div>
-                  <strong>Hasil Analisis Vision-Language Model (Gemini API)</strong>
+                  <strong>Hasil Asli Prediksi AI (Gemini VLM)</strong>
                   <p>
-                    Objek terdeteksi sebagai sampah · Confidence score{' '}
-                    {Math.round((selected.analysis?.confidence_score || 0.9) * 100)}% · Status:{' '}
-                    {selected.analysis?.is_validated ? 'Sudah Divalidasi' : 'Belum Divalidasi'}
+                    Kategori Asli: <strong>{selected.analysis?.category || 'organik'}</strong> · Keparahan Asli: <strong>{selected.analysis?.severity || 'sedang'}</strong> · Confidence: <strong>{Math.round((selected.analysis?.confidence_score || 0.9) * 100)}%</strong>
                   </p>
+                  {selected.analysis?.detected_notes && (
+                    <p style={{ marginTop: '4px', fontSize: '12px', color: '#64748b' }}>
+                      Catatan AI: {selected.analysis.detected_notes}
+                    </p>
+                  )}
                 </div>
               </div>
-              <div className="two-fields">
-                <div className="field">
-                  <label>Kategori sampah</label>
-                  <select
+
+              <div className="correction-box" style={{ background: '#f8fafc', padding: '14px', borderRadius: '10px', border: '1px solid #e2e8f0', margin: '14px 0' }}>
+                <h4 style={{ margin: '0 0 10px 0', fontSize: '14px', color: '#1e293b' }}>Form Koreksi & Validasi Admin (HITL)</h4>
+                <div className="two-fields">
+                  <div className="field">
+                    <label>Koreksi Kategori</label>
+                    <select
+                      className="text-input"
+                      value={selected.analysis?.corrected_category || selected.analysis?.category || 'organik'}
+                      onChange={e =>
+                        setSelected({
+                          ...selected,
+                          analysis: { ...selected.analysis, corrected_category: e.target.value }
+                        })
+                      }
+                    >
+                      <option value="organik">Organik</option>
+                      <option value="anorganik">Anorganik</option>
+                    </select>
+                  </div>
+                  <div className="field">
+                    <label>Koreksi Tingkat Keparahan</label>
+                    <select
+                      className="text-input"
+                      value={selected.analysis?.corrected_severity || selected.analysis?.severity || 'sedang'}
+                      onChange={e =>
+                        setSelected({
+                          ...selected,
+                          analysis: { ...selected.analysis, corrected_severity: e.target.value }
+                        })
+                      }
+                    >
+                      <option value="rendah">Rendah (Volume kecil)</option>
+                      <option value="sedang">Sedang (Volume sedang)</option>
+                      <option value="tinggi">Tinggi (Tumpukan besar/menghalangi/B3)</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="field" style={{ marginTop: '10px' }}>
+                  <label>Catatan Petugas Kebersihan / Admin</label>
+                  <input
+                    type="text"
                     className="text-input"
-                    value={selected.analysis?.category || 'organik'}
+                    placeholder="Contoh: Teridentifikasi botol kaca B3, penanganan khusus..."
+                    value={selected.analysis?.admin_notes || ''}
                     onChange={e =>
                       setSelected({
                         ...selected,
-                        analysis: { ...selected.analysis, category: e.target.value }
+                        analysis: { ...selected.analysis, admin_notes: e.target.value }
                       })
                     }
-                  >
-                    <option value="organik">Organik</option>
-                    <option value="anorganik">Anorganik</option>
-                  </select>
-                </div>
-                <div className="field">
-                  <label>Tingkat keparahan</label>
-                  <select
-                    className="text-input"
-                    value={selected.analysis?.severity || 'sedang'}
-                    onChange={e =>
-                      setSelected({
-                        ...selected,
-                        analysis: { ...selected.analysis, severity: e.target.value }
-                      })
-                    }
-                  >
-                    <option value="rendah">Rendah</option>
-                    <option value="sedang">Sedang</option>
-                    <option value="tinggi">Tinggi</option>
-                  </select>
+                  />
                 </div>
               </div>
+
               <button
                 className="btn btn-primary btn-wide"
                 onClick={() =>
                   updateSelected({
-                    analysis: { ...selected.analysis, is_validated: true }
+                    analysis: {
+                      corrected_category: selected.analysis?.corrected_category || selected.analysis?.category || 'organik',
+                      corrected_severity: selected.analysis?.corrected_severity || selected.analysis?.severity || 'sedang',
+                      admin_notes: selected.analysis?.admin_notes || ''
+                    }
                   })
                 }
               >
-                <Check size={16} /> Validasi dan simpan koreksi (HITL)
+                <Check size={16} /> Simpan Validasi & Koreksi HITL
               </button>
               <p className="validation-note">
-                <ShieldCheck size={14} /> Pendekatan Human-in-the-Loop (HITL): koreksi admin tercatat pada kolom
-                is_validated dan corrected_by sebagai bahan evaluasi prompt.
+                <ShieldCheck size={14} /> Nilai asli AI dipertahankan terpisah dari koreksi admin demi audit trail dan evaluasi model.
               </p>
             </div>
           )}
@@ -1524,8 +1619,16 @@ function StatCard({ title, value, change, icon, tone, trend, helper }) {
 }
 
 function Status({ status }) {
+  const cls =
+    status === 'Menunggu'
+      ? 'waiting'
+      : status === 'Diproses'
+      ? 'progress'
+      : status === 'Ditolak'
+      ? 'rejected'
+      : 'done'
   return (
-    <span className={`status-chip ${status === 'Menunggu' ? 'waiting' : status === 'Diproses' ? 'progress' : 'done'}`}>
+    <span className={`status-chip ${cls}`}>
       <i />
       {status}
     </span>
@@ -2086,6 +2189,7 @@ function StatusPage({
   isChatLoading
 }) {
   const [showReportList, setShowReportList] = useState(false)
+  const userCount = chat.filter(m => m.sender === 'user').length
   const stepIndex = report ? Math.max(0, statuses.indexOf(report.status)) : 0
 
   const statusHeadline =
@@ -2295,15 +2399,22 @@ function StatusPage({
                   value={newMessage}
                   onChange={e => setNewMessage(e.target.value)}
                   onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), sendChat())}
-                  placeholder="Tanyakan cara memilah sampah..."
+                  placeholder={userCount >= 10 ? 'Batas 10 pesan untuk laporan ini tercapai.' : 'Tanyakan cara memilah sampah (maks. 300 karakter)...'}
+                  maxLength={300}
+                  disabled={userCount >= 10 || isChatLoading}
                 />
-                <button type="button" onClick={sendChat} disabled={isChatLoading}>
+                <button type="button" onClick={sendChat} disabled={userCount >= 10 || isChatLoading || !newMessage.trim()}>
                   <ArrowUpRight size={16} />
                 </button>
               </div>
-              <small className="figma-chat-disclaimer">
-                Chatbot hanya menjawab pertanyaan seputar sampah & kebersihan kampus.
-              </small>
+              <div className="figma-chat-footer-meta" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '6px' }}>
+                <small className="figma-chat-disclaimer">
+                  Chatbot terproteksi & fokus pada kebersihan kampus.
+                </small>
+                <small style={{ fontSize: '11px', color: userCount >= 10 ? '#dc2626' : '#64748b', fontWeight: 600 }}>
+                  {userCount}/10 pertanyaan ({300 - newMessage.length} char)
+                </small>
+              </div>
             </div>
           </section>
         </div>

@@ -11,7 +11,7 @@ export const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || '
 export const iconFor = status =>
   L.divIcon({
     className: '',
-    html: `<div class="pin pin-${status === 'Menunggu' ? 'waiting' : status === 'Diproses' ? 'progress' : 'done'}"><span></span></div>`,
+    html: `<div class="pin pin-${status === 'Menunggu' ? 'waiting' : status === 'Diproses' ? 'progress' : status === 'Ditolak' ? 'rejected' : 'done'}"><span></span></div>`,
     iconSize: [30, 38],
     iconAnchor: [15, 36]
   })

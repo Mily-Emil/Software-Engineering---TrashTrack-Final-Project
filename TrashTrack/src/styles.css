@@ -567,6 +567,13 @@ button {
 .dot.green {
   background: #59a778;
 }
+.status-chip.rejected {
+  color: #b91c1c;
+  background: #fee2e2;
+}
+.status-chip.rejected i {
+  background: #ef4444;
+}
 .severity-chip {
   background: #f4f5f3;
   color: #78827c;
@@ -2838,4 +2845,41 @@ button {
 }
 .pin-picked span {
   background: #1b6943;
+}
+
+.pin-rejected span {
+  background: #dc2626;
+}
+
+.location-meta-chip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0 10px 0;
+  font-size: 12px;
+  color: #475569;
+}
+.location-meta-chip span {
+  background: #f1f5f9;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid #e2e8f0;
+}
+.location-meta-chip .review-badge {
+  background: #fef3c7;
+  color: #b45309;
+  border-color: #fde68a;
+  font-weight: 600;
+}
+.hitl-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 600;
+  background: #e0f2fe;
+  color: #0369a1;
+  padding: 2px 7px;
+  border-radius: 6px;
+  border: 1px solid #bae6fd;
 }
