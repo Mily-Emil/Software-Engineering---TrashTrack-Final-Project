@@ -106,9 +106,20 @@ alter table public.ai_summaries add column if not exists structured_data jsonb;
 
 -- Internal rate-limiting table (Tema 4: Hash per perangkat / IP dengan salt)
 create table if not exists public.report_rate_limits (
-  client_hash text not null,
+  client_hash text not null default '',
   created_at timestamptz not null default now()
 );
+alter table public.report_rate_limits add column if not exists client_hash text;
+
+do $$
+begin
+  if exists (
+    select 1 from information_schema.columns 
+    where table_schema = 'public' and table_name = 'report_rate_limits' and column_name = 'ip_hash'
+  ) then
+    execute 'update public.report_rate_limits set client_hash = coalesce(client_hash, ip_hash, '''') where client_hash is null';
+  end if;
+end $$;
 
 create index if not exists reports_status_created_idx on public.reports(status, created_at desc);
 create index if not exists reports_location_idx on public.reports(latitude, longitude);
@@ -156,6 +167,7 @@ grant select, insert, update, delete on public.reports, public.ai_analysis, publ
 grant execute on function public.is_admin() to authenticated;
 
 -- Tema 4: Salted Rate Limit Checker
+drop function if exists public.claim_report_slot(text);
 create or replace function public.claim_report_slot(p_client_hash text) returns boolean
 language plpgsql security definer set search_path = '' as $$
 declare v_count integer;
@@ -173,6 +185,8 @@ grant execute on function public.claim_report_slot(text) to service_role;
 
 -- Tema 1, 2, 3, 7, 8, 9: Public report submission RPC
 -- Alur: Laporan selalu disimpan ke DB. Jika AI menolak atau gagal, status Menunggu + needs_review=true
+drop function if exists public.submit_report(text, double precision, double precision, text, jsonb, text);
+drop function if exists public.submit_report(text, double precision, double precision, text, jsonb, text, text, double precision, text, text);
 create or replace function public.submit_report(
   p_photo_url text,
   p_latitude double precision,
@@ -191,7 +205,7 @@ declare
   -- Salted hash (kombinasi IP + device_id jika ada)
   v_salt text := 'unklab_trashtrack_salt_2026';
   v_client_key text := coalesce(p_device_id, v_ip);
-  v_hash text := encode(extensions.digest(v_client_key || ':' || v_salt, 'sha256'), 'hex');
+  v_hash text := md5(v_client_key || ':' || v_salt);
   v_count integer;
   v_report public.reports%rowtype;
   -- Tema 9: Format kode acak kriptografis 4 karakter non-ambigu (contoh: TT-2026-K9M2)
