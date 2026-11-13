@@ -2507,6 +2507,15 @@ button {
   z-index: 2;
 }
 
+.figma-photo-detected-badge.rejected {
+  background: #dc2626 !important;
+  color: #ffffff !important;
+}
+
+.figma-photo-detected-badge.rejected .detected-check {
+  color: #ffffff !important;
+}
+
 .detected-check {
   color: #1e7046;
   stroke-width: 3px;
@@ -2592,6 +2601,19 @@ button {
 .figma-analysis-chip.chip-severity-tinggi {
   background: #fee2e2;
   color: #b91c1c;
+}
+
+.figma-analysis-chip.chip-rejected {
+  background: #fee2e2;
+  color: #b91c1c;
+  border-color: #fca5a5;
+  font-weight: 600;
+}
+
+.figma-analysis-chip.chip-rejected-sub {
+  background: #f1f5f9;
+  color: #475569;
+  border-color: #cbd5e1;
 }
 
 .figma-analysis-text {
@@ -2687,6 +2709,20 @@ button {
   border-radius: 50%;
   background: #d97706;
   display: inline-block;
+}
+
+.status-dot-red {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #dc2626;
+  display: inline-block;
+}
+
+.figma-status-indicator-badge.rejected {
+  background: #fee2e2;
+  color: #b91c1c;
+  border: 1px solid #fca5a5;
 }
 
 .figma-code-meta-info {

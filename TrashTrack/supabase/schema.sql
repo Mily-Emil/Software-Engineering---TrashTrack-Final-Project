@@ -240,7 +240,7 @@ begin
   -- 3. Parse Analisis AI dengan fallback jika bukan sampah atau confidence rendah
   v_is_waste := coalesce((p_analysis->>'is_waste')::boolean, true);
   v_confidence := least(1, greatest(0, coalesce((p_analysis->>'confidence_score')::numeric, 0.85)));
-  v_detected_notes := p_analysis->>'notes';
+  v_detected_notes := coalesce(p_analysis->>'detected_notes', p_analysis->>'notes');
 
   -- Jika AI mendeteksi bukan sampah atau confidence < 0.70, tandai perlu ditinjau admin
   if not v_is_waste or v_confidence < 0.70 then
@@ -273,6 +273,7 @@ begin
     zone_name,
     location_source,
     location_accuracy,
+    status,
     needs_review,
     device_id,
     ip_hash
@@ -286,6 +287,7 @@ begin
     coalesce(nullif(trim(p_zone_name), ''), 'Kampus Universitas Klabat'),
     coalesce(nullif(trim(p_location_source), ''), 'manual'),
     p_location_accuracy,
+    case when not v_is_waste then 'Ditolak'::public.report_status else 'Menunggu'::public.report_status end,
     v_needs_review,
     p_device_id,
     v_hash

@@ -255,11 +255,16 @@ export function validateVisionJson(rawOrObj) {
     if (!obj.is_waste) {
       return {
         is_waste: false,
-        category: 'anorganik',
-        severity: 'rendah',
+        category: null,
+        severity: null,
         confidence_score: score,
         needs_review: true,
-        detected_notes: 'Objek tidak terdeteksi sebagai sampah secara meyakinkan. Memerlukan tinjauan petugas.',
+        detected_notes:
+          obj.detected_notes ||
+          'Foto tidak terdeteksi sebagai sampah fisik (terdeteksi sebagai manusia, boneka/mainan, tangkapan layar, atau objek non-sampah).',
+        recommendation:
+          obj.recommendation ||
+          'Laporan ditolak. Harap unggah foto yang benar-benar menampilkan titik timbunan sampah di lingkungan kampus Universitas Klabat.',
         is_validated: false
       }
     }
@@ -294,28 +299,41 @@ export async function analyzeWasteClientFallback(file, description = '') {
   // 1. Coba panggil Gemini API melalui server (/api/gemini)
   try {
     const base64Data = await fileToBase64(file)
-    const basePrompt = `Anda adalah sistem deteksi titik sampah di lingkungan kampus Universitas Klabat (Unklab).
-Instruksi: Analisis foto titik sampah, tentukan kategori, tingkat keparahan sesuai rubrik, dan tingkat keyakinan (confidence score).
-Konteks: Lingkungan kampus Universitas Klabat. Catatan pelapor: "${description.slice(0, 300) || '-'}".
+    const basePrompt = `Anda adalah sistem deteksi dan verifikasi titik sampah di lingkungan kampus Universitas Klabat (Unklab).
+Instruksi: Analisis foto dengan teliti.
 
-RUBRIK KEPARAHAN:
-- "rendah": Volume sedikit/tercecer kecil (< 1 kantong kecil), tidak mengganggu jalan.
-- "sedang": Sekitar 1 kantong plastik atau berserakan di tepi jalur pejalan kaki.
-- "tinggi": Menumpuk banyak / meluber dari tempat sampah / bau busuk / menghalangi akses jalan kampus.
+ATURAN UTAMA PENOLAKAN FOTO BUKAN SAMPAH:
+Jika foto menampilkan:
+- Manusia, wajah, potret orang, selfie, atau orang sedang beraktivitas/berbicara;
+- Boneka, mainan 3D, action figure, patung, atau karakter fiksi;
+- Tangkapan layar (screenshot), antarmuka website/aplikasi, grafis digital;
+- Kendaraan, hewan, atau gedung/ruangan bersih tanpa timbunan sampah fisik;
+MAKA ANDA WAJIB MENGEMBALIKAN:
+{
+  "is_waste": false,
+  "category": null,
+  "severity": null,
+  "confidence_score": 0.95,
+  "detected_notes": "Sebutkan objek yang terdeteksi dengan jelas (contoh: 'Foto menampilkan seseorang sedang berbicara di panggung, bukan titik sampah' atau 'Foto berupa boneka/karakter 3D, bukan sampah fisik kampus')",
+  "recommendation": "Laporan ditolak. Harap unggah foto yang benar-benar menampilkan titik sampah fisik di lingkungan kampus Unklab."
+}
 
-KATEGORI:
-- "organik": Sisa makanan, daun, ranting, rumput, buah, sayur.
-- "anorganik": Plastik, botol, gelas kemasan, kaleng, kertas, styrofoam.
-(Jika ada sampah B3/baterai/elektronik atau campuran, tandai pada detected_notes).
+JIKA FOTO BENAR-BENAR BERISI SAMPAH FISIK:
+- "is_waste": true
+- "category": "organik" (daun, ranting, sisa makanan) atau "anorganik" (plastik, botol, kaleng, kertas)
+- "severity": "rendah" (< 1 kantong kecil), "sedang" (1 kantong/tempat sampah penuh), "tinggi" (menumpuk besar/meluber ke jalan/B3)
+- "confidence_score": number (0.00 sampai 1.00)
+- "detected_notes": catatan tambahan jika ada sampah campuran/B3
+- "recommendation": saran pemilahan atau penanganan awal
 
 Indikator keluaran: Kembalikan HANYA JSON murni tanpa markdown:
 {
   "is_waste": boolean,
-  "category": "organik" | "anorganik",
-  "severity": "rendah" | "sedang" | "tinggi",
-  "confidence_score": number (skala 0.00 sampai 1.00),
-  "detected_notes": string (opsional jika campuran/B3),
-  "recommendation": string (saran penanganan singkat)
+  "category": "organik" | "anorganik" | null,
+  "severity": "rendah" | "sedang" | "tinggi" | null,
+  "confidence_score": number,
+  "detected_notes": string,
+  "recommendation": string
 }`
 
     const firstRaw = await callServerGemini(
@@ -393,6 +411,10 @@ Indikator keluaran: Kembalikan HANYA JSON murni tanpa markdown:
 
 // Saran awal Chatbot
 export function buildInitialAdvice(analysis, coords) {
+  if (analysis?.is_waste === false) {
+    const reason = analysis?.detected_notes || 'Objek dalam foto bukan merupakan sampah fisik di kampus.'
+    return `Halo! Berdasarkan analisis visual Gemini AI, foto yang dilaporkan TIDAK TERDETEKSI sebagai sampah (${reason}). Laporan ini ditolak oleh sistem dan tidak memerlukan tindakan pembersihan. Jika Anda menemukan titik sampah nyata di lingkungan Universitas Klabat, silakan unggah foto baru.`
+  }
   const category = analysis?.category || 'anorganik'
   const severity = analysis?.severity || 'sedang'
   const zone = unklabZoneName(coords)
@@ -404,6 +426,9 @@ export function buildInitialAdvice(analysis, coords) {
 }
 
 export async function generateInitialAdviceWithAI(analysis, coords) {
+  if (analysis?.is_waste === false) {
+    return buildInitialAdvice(analysis, coords)
+  }
   const category = analysis?.category || 'anorganik'
   const severity = analysis?.severity || 'sedang'
   const zone = unklabZoneName(coords)

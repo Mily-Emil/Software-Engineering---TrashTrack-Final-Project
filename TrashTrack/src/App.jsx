@@ -434,7 +434,7 @@ function App() {
           zone_name: zoneNow,
           location_source: locationSource,
           location_accuracy: locationAccuracy,
-          status: 'Menunggu',
+          status: aiResult.is_waste === false ? 'Ditolak' : 'Menunggu',
           needs_review: Boolean(aiResult.needs_review),
           created_at: createdAt,
           photo_url: previewUrl,
@@ -461,7 +461,9 @@ function App() {
       setPage('analysis')
       setFile(null)
 
-      if (savedReport.needs_review) {
+      if (savedReport.analysis?.is_waste === false || savedReport.status === 'Ditolak') {
+        setNotice(`Laporan ditolak oleh AI: Foto bukan sampah kampus. ${savedReport.analysis?.detected_notes || ''}`)
+      } else if (savedReport.needs_review) {
         setNotice(`Laporan berhasil dikirim (${savedReport.report_code}). Memerlukan verifikasi lanjutan oleh petugas kebersihan kampus.`)
       } else {
         setNotice(`Laporan berhasil dikirim! Kode laporan Anda: ${savedReport.report_code}`)
@@ -1968,12 +1970,14 @@ function AnalysisPage({
 
   const active = report || reports[0] || DEMO_ANALYSIS_REPORT
   const code = active.report_code || 'TT-2026-89A'
+  const isWaste = active.analysis?.is_waste !== false && active.status !== 'Ditolak'
   const rawConfidence = Number(active.analysis?.confidence_score ?? 0.94)
   // confidence_score disimpan sebagai desimal 0–1; konversi ke persen bila perlu
   const confidence = Math.round(rawConfidence <= 1 ? rawConfidence * 100 : rawConfidence)
   const category = (active.analysis?.category || 'organik').toLowerCase()
   const severity = (active.analysis?.severity || 'sedang').toLowerCase()
   const recommendation =
+    active.analysis?.detected_notes ||
     active.analysis?.recommendation ||
     active.description ||
     'Daun kering dan sisa rumput teridentifikasi di tepi jalur pejalan kaki. Pisahkan dari sampah anorganik dan arahkan ke pengomposan.'
@@ -2010,8 +2014,17 @@ function AnalysisPage({
       <div className="page-heading figma-analysis-heading">
         <div>
           <p className="eyebrow">HASIL ANALISIS GEMINI VLM {isDemo ? '— CONTOH TAMPILAN' : ''}</p>
-          <h1>Laporan diterima. Terima kasih sudah peduli.</h1>
-          <p>Simpan kode laporan Anda untuk memantau penanganan dan berdiskusi dengan asisten AI.</p>
+          {isWaste ? (
+            <>
+              <h1>Laporan diterima. Terima kasih sudah peduli.</h1>
+              <p>Simpan kode laporan Anda untuk memantau penanganan dan berdiskusi dengan asisten AI.</p>
+            </>
+          ) : (
+            <>
+              <h1 style={{ color: '#b91c1c' }}>Laporan ditolak. Foto bukan sampah kampus.</h1>
+              <p style={{ color: '#b91c1c' }}>AI mendeteksi objek dalam foto bukan merupakan titik sampah fisik di lingkungan Universitas Klabat.</p>
+            </>
+          )}
         </div>
 
         {reports.length > 0 && (
@@ -2080,10 +2093,17 @@ function AnalysisPage({
                 e.currentTarget.src = FALLBACK_WASTE_SVG
               }}
             />
-            <div className="figma-photo-detected-badge">
-              <Check size={14} className="detected-check" />
-              <span>Sampah Terdeteksi</span>
-            </div>
+            {isWaste ? (
+              <div className="figma-photo-detected-badge">
+                <Check size={14} className="detected-check" />
+                <span>Sampah Terdeteksi</span>
+              </div>
+            ) : (
+              <div className="figma-photo-detected-badge rejected">
+                <X size={14} className="detected-check" />
+                <span>Bukan Sampah (Ditolak)</span>
+              </div>
+            )}
           </div>
 
           <div className="figma-analysis-body">
@@ -2095,19 +2115,32 @@ function AnalysisPage({
               </div>
             </div>
 
-            <div className="figma-chips-row">
-              <span className={`figma-analysis-chip ${category === 'organik' ? 'chip-organic' : 'chip-inorganic'}`}>
-                {category.charAt(0).toUpperCase() + category.slice(1)}
-              </span>
-              <span className={`figma-analysis-chip chip-severity-${severity}`}>
-                {severity.charAt(0).toUpperCase() + severity.slice(1)}
-              </span>
-            </div>
+            {isWaste ? (
+              <div className="figma-chips-row">
+                <span className={`figma-analysis-chip ${category === 'organik' ? 'chip-organic' : 'chip-inorganic'}`}>
+                  {category.charAt(0).toUpperCase() + category.slice(1)}
+                </span>
+                <span className={`figma-analysis-chip chip-severity-${severity}`}>
+                  {severity.charAt(0).toUpperCase() + severity.slice(1)}
+                </span>
+              </div>
+            ) : (
+              <div className="figma-chips-row">
+                <span className="figma-analysis-chip chip-rejected">
+                  Bukan Sampah
+                </span>
+                <span className="figma-analysis-chip chip-rejected-sub">
+                  Non-Sampah Kampus
+                </span>
+              </div>
+            )}
 
             <p className="figma-analysis-text">{recommendation}</p>
 
             <div className="figma-analysis-footer-note">
-              Analisis AI bersifat rekomendasi. Menunggu validasi petugas (HITL).
+              {isWaste
+                ? 'Analisis AI bersifat rekomendasi. Menunggu validasi petugas (HITL).'
+                : 'Laporan ini ditolak secara otomatis oleh AI karena foto tidak memenuhi kriteria sampah kampus.'}
             </div>
           </div>
         </section>
@@ -2133,8 +2166,8 @@ function AnalysisPage({
             </button>
 
             <div className="figma-status-chip-row">
-              <span className="figma-status-indicator-badge">
-                <i className="status-dot-orange" /> {active.status || 'Menunggu'}
+              <span className={`figma-status-indicator-badge ${!isWaste ? 'rejected' : ''}`}>
+                <i className={!isWaste ? 'status-dot-red' : 'status-dot-orange'} /> {active.status || (isWaste ? 'Menunggu' : 'Ditolak')}
               </span>
             </div>
 
@@ -2145,20 +2178,39 @@ function AnalysisPage({
           </section>
 
           <section className="panel figma-steps-card">
-            <h3>Apa selanjutnya?</h3>
+            <h3>{isWaste ? 'Apa selanjutnya?' : 'Mengapa ditolak?'}</h3>
             <ol className="figma-steps-list">
-              <li>
-                <span className="step-num">1.</span>
-                <span>Petugas memvalidasi hasil deteksi AI.</span>
-              </li>
-              <li>
-                <span className="step-num">2.</span>
-                <span>Titik sampah dijadwalkan untuk dibersihkan.</span>
-              </li>
-              <li>
-                <span className="step-num">3.</span>
-                <span>Pantau progres melalui kode laporan Anda.</span>
-              </li>
+              {isWaste ? (
+                <>
+                  <li>
+                    <span className="step-num">1.</span>
+                    <span>Petugas memvalidasi hasil deteksi AI.</span>
+                  </li>
+                  <li>
+                    <span className="step-num">2.</span>
+                    <span>Titik sampah dijadwalkan untuk dibersihkan.</span>
+                  </li>
+                  <li>
+                    <span className="step-num">3.</span>
+                    <span>Pantau progres melalui kode laporan Anda.</span>
+                  </li>
+                </>
+              ) : (
+                <>
+                  <li>
+                    <span className="step-num" style={{ background: '#fee2e2', color: '#b91c1c' }}>1.</span>
+                    <span>Foto tidak teridentifikasi sebagai titik timbunan sampah fisik.</span>
+                  </li>
+                  <li>
+                    <span className="step-num" style={{ background: '#fee2e2', color: '#b91c1c' }}>2.</span>
+                    <span>Laporan diberi status Ditolak dan tidak dijadwalkan ke petugas.</span>
+                  </li>
+                  <li>
+                    <span className="step-num" style={{ background: '#fee2e2', color: '#b91c1c' }}>3.</span>
+                    <span>Silakan ambil foto ulang jika menemukan titik sampah nyata di Unklab.</span>
+                  </li>
+                </>
+              )}
             </ol>
 
             <button
