@@ -57,19 +57,43 @@ interface VisionAnalysis {
   category: 'organik' | 'anorganik' | ''
   severity: 'rendah' | 'sedang' | 'tinggi' | ''
   confidence_score: number
+  detected_notes?: string
+  recommendation?: string
   ai_model?: string
 }
 
-// Validasi skema keluaran JSON sesuai Tabel 2 dokumen CogITo
+// Validasi skema keluaran JSON sesuai Tabel 2 dokumen CogITo + Guard objek non-sampah
 function parseAndValidateVisionJson(rawText: string): VisionAnalysis | null {
   try {
     const cleaned = rawText.replace(/```json|```/gi, '').trim()
-    const parsed = JSON.parse(cleaned)
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/)
+    const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : cleaned)
     if (typeof parsed.is_waste !== 'boolean') return null
-    const confidence = Number(parsed.confidence_score)
-    if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) return null
-    if (!parsed.is_waste) {
-      return { is_waste: false, category: '', severity: '', confidence_score: confidence }
+    let confidence = Number(parsed.confidence_score)
+    if (!Number.isFinite(confidence)) confidence = 0.85
+    if (confidence > 1 && confidence <= 100) confidence = confidence / 100
+    confidence = Math.min(1, Math.max(0, Number(confidence.toFixed(3))))
+
+    const combinedNotes = `${parsed.detected_notes || ''} ${parsed.recommendation || ''}`.toLowerCase()
+    const nonWasteIndicators =
+      /\b(bukan sampah|bukan titik sampah|bukanlah sampah|tidak ada sampah|tidak ditemukan sampah|boneka|mainan|action figure|figurine|figurin|karakter 3d|model 3d|render 3d|animasi|kartun|plushie|patung|potret manusia|potret orang|wajah orang|foto selfie|sedang berbicara|tangkapan layar|screenshot|antarmuka web)\b/i
+    const forcedNotWaste =
+      !parsed.is_waste ||
+      (nonWasteIndicators.test(combinedNotes) && !/\b(tumpukan sampah|tempat sampah penuh|sampah berserakan)\b/i.test(combinedNotes))
+
+    if (forcedNotWaste) {
+      return {
+        is_waste: false,
+        category: '',
+        severity: '',
+        confidence_score: Math.max(confidence, 0.90),
+        detected_notes:
+          parsed.detected_notes ||
+          'Foto tidak terdeteksi sebagai sampah fisik (terdeteksi sebagai objek non-sampah seperti boneka/karakter 3D, manusia, atau tangkapan layar).',
+        recommendation:
+          parsed.recommendation ||
+          'Laporan ditolak secara otomatis. Harap unggah foto yang benar-benar menampilkan titik timbunan sampah fisik di lingkungan kampus Universitas Klabat.'
+      }
     }
     const category = String(parsed.category || '').toLowerCase()
     const severity = String(parsed.severity || '').toLowerCase()
@@ -79,22 +103,24 @@ function parseAndValidateVisionJson(rawText: string): VisionAnalysis | null {
       is_waste: true,
       category: category as 'organik' | 'anorganik',
       severity: severity as 'rendah' | 'sedang' | 'tinggi',
-      confidence_score: Number(confidence.toFixed(3))
+      confidence_score: confidence,
+      detected_notes: parsed.detected_notes || undefined,
+      recommendation: parsed.recommendation || undefined
     }
   } catch {
     return null
   }
 }
 
-// Panggilan Gemini API dengan batas waktu 10 detik (NFR-01) dan fallback model otomatis
+// Panggilan Gemini API dengan failover antar-model dan timeout per model
 async function callGemini(apiKey: string, contents: unknown[], temperature = 0.1): Promise<string> {
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 10000)
-  try {
-    const primary = Deno.env.get('GEMINI_MODEL') || 'gemini-3.5-flash-lite'
-    const models = Array.from(new Set([primary, 'gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gemini-3.8-flash']))
-    let lastError = 'Gemini API error'
-    for (const model of models) {
+  const primary = Deno.env.get('GEMINI_MODEL') || 'gemini-3.5-flash-lite'
+  const models = Array.from(new Set([primary, 'gemini-3.5-flash-lite', 'gemini-3.8-flash', 'gemini-3.5-flash']))
+  let lastError = 'Gemini API error'
+  for (const model of models) {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 14000)
+    try {
       const res = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
         {
@@ -110,15 +136,21 @@ async function callGemini(apiKey: string, contents: unknown[], temperature = 0.1
       if (res.ok) {
         const data = await res.json()
         const parts = data?.candidates?.[0]?.content?.parts || []
-        return parts.map((p: { text?: string }) => p.text || '').join('').trim()
+        return parts
+          .filter((p: { thought?: boolean }) => !p.thought)
+          .map((p: { text?: string }) => p.text || '')
+          .join('')
+          .trim()
       }
       lastError = `Gemini API HTTP ${res.status}`
       if (![404, 429, 503].includes(res.status)) break
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : 'Gemini timeout'
+    } finally {
+      clearTimeout(timeout)
     }
-    throw new Error(lastError)
-  } finally {
-    clearTimeout(timeout)
   }
+  throw new Error(lastError)
 }
 
 async function analyzeWastePhoto(
@@ -141,15 +173,27 @@ async function analyzeWastePhoto(
   for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i])
   const base64Image = btoa(binary)
 
-  const basePrompt = `Anda adalah sistem deteksi titik sampah di lingkungan kampus Universitas Klabat (Unklab).
-Instruksi: Periksa apakah foto ini berisi sampah, lalu tentukan kategori dan tingkat keparahannya.
-Konteks: Lingkungan kampus Universitas Klabat. Deskripsi tambahan dari pelapor: "${description || '-'}".
-Indikator keluaran: Kembalikan HANYA objek JSON murni tanpa markdown atau teks lain dengan skema berikut:
+  const basePrompt = `Anda adalah sistem verifikasi visual titik sampah kampus Universitas Klabat (Unklab).
+Tugas utama Anda adalah MEMBEDAKAN antara (A) tumpukan sampah nyata yang berserakan/menumpuk di lingkungan kampus vs (B) foto objek BUKAN SAMPAH.
+
+ATURAN WAJIB PENOLAKAN (is_waste: false):
+Anda WAJIB mengembalikan "is_waste": false apabila foto menampilkan:
+1. Boneka, mainan, karakter 3D, render CGI, action figure, figurin, plushie, kartun, atau objek pajangan (WALAUPUN terbuat dari plastik/kain, itu adalah OBJEK/MAINAN, BUKAN sampah kampus!).
+2. Manusia, wajah, selfie, foto profil, orang berpidato/beraktivitas di ruangan atau panggung.
+3. Tangkapan layar (screenshot), antarmuka aplikasi/web, meme, poster, atau teks digital.
+4. Ruangan bersih, gedung, kendaraan, hewan, atau benda pribadi utuh (laptop, botol minum/tumbler utuh di meja, tas, sepatu yang dipakai).
+
+HANYA kembalikan "is_waste": true jika foto benar-benar memperlihatkan SAMPAH yang dibuang/berserakan/menumpuk di tanah, tempat sampah, selokan, atau sudut kampus!
+Deskripsi tambahan dari pelapor: "${description || '-'}".
+
+Kembalikan HANYA 1 objek JSON murni dengan skema:
 {
-  "is_waste": boolean (true jika foto berisi sampah, false jika tidak),
-  "category": string ("organik" atau "anorganik"; "" jika is_waste bernilai false),
-  "severity": string ("rendah", "sedang", atau "tinggi"; "" jika is_waste bernilai false),
-  "confidence_score": number (antara 0 sampai 1)
+  "is_waste": boolean,
+  "category": "organik" | "anorganik" | "",
+  "severity": "rendah" | "sedang" | "tinggi" | "",
+  "confidence_score": number (antara 0 sampai 1),
+  "detected_notes": "Penjelasan singkat objek yang terlihat di foto",
+  "recommendation": "Saran tindakan singkat"
 }`
 
   const firstRaw = await callGemini(apiKey, [
@@ -327,6 +371,7 @@ Indikator keluaran: Buat ringkasan terstruktur dalam Bahasa Indonesia yang memua
         zone_name: zoneName,
         location_source: locationSource,
         location_accuracy: locationAccuracy,
+        status: analysis.is_waste === false ? 'Ditolak' : 'Menunggu',
         needs_review: needsReview,
         device_id: deviceId || null,
         ip_hash: ipHash
@@ -345,7 +390,9 @@ Indikator keluaran: Buat ringkasan terstruktur dalam Bahasa Indonesia yang memua
       category: analysis.category || 'organik',
       severity: analysis.severity || 'rendah',
       confidence_score: analysis.confidence_score,
-      detected_notes: needsReview ? 'Perlu review petugas: skor keyakinan rendah atau terindikasi bukan sampah biasa.' : null
+      detected_notes:
+        analysis.detected_notes ||
+        (needsReview ? 'Perlu review petugas: skor keyakinan rendah atau terindikasi bukan sampah biasa.' : null)
     })
 
     if (analysisError) {

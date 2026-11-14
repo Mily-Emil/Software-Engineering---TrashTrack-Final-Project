@@ -424,14 +424,17 @@ function App() {
         try {
           aiResult = await analyzeWasteClientFallback(file, description)
         } catch {
-          // Jika AI error, fallback ke objek pending review agar laporan TIDAK HILANG (Tema 1)
+          // Jika AI error/timeout, tandai sebagai fallback verifikasi manual (confidence 0%)
+          // agar TIDAK diklaim sebagai "Sampah Terdeteksi" (Tema 1)
           aiResult = {
             is_waste: true,
+            is_unverified_fallback: true,
             category: 'anorganik',
             severity: 'sedang',
-            confidence_score: 0.65,
+            confidence_score: 0.0,
             needs_review: true,
-            detected_notes: 'Analisis AI tidak selesai dalam batas waktu. Laporan masuk antrean validasi manual admin.',
+            ai_model: 'fallback-manual-review',
+            detected_notes: 'Analisis AI tidak selesai dalam batas waktu. Laporan masuk antrean validasi manual admin (HITL).',
             is_validated: false
           }
         }
@@ -2057,7 +2060,11 @@ function AnalysisPage({
 
   const active = report || reports[0] || DEMO_ANALYSIS_REPORT
   const code = active.report_code || 'TT-2026-89A'
-  const isWaste = active.analysis?.is_waste !== false && active.status !== 'Ditolak'
+  const isUnverifiedFallback =
+    Boolean(active.analysis?.is_unverified_fallback) ||
+    active.analysis?.ai_model === 'fallback-manual-review' ||
+    /tidak selesai dalam batas waktu|tidak dapat dijangkau/i.test(active.analysis?.detected_notes || '')
+  const isWaste = active.analysis?.is_waste !== false && active.status !== 'Ditolak' && !isUnverifiedFallback
   const rawConfidence = Number(active.analysis?.confidence_score ?? 0.94)
   // confidence_score disimpan sebagai desimal 0–1; konversi ke persen bila perlu
   const confidence = Math.round(rawConfidence <= 1 ? rawConfidence * 100 : rawConfidence)
@@ -2101,7 +2108,14 @@ function AnalysisPage({
       <div className="page-heading figma-analysis-heading">
         <div>
           <p className="eyebrow">HASIL ANALISIS GEMINI VLM {isDemo ? '— CONTOH TAMPILAN' : ''}</p>
-          {isWaste ? (
+          {isUnverifiedFallback ? (
+            <>
+              <h1 style={{ color: '#b45309' }}>Laporan masuk antrean verifikasi manual.</h1>
+              <p style={{ color: '#92400e' }}>
+                Analisis AI otomatis melewati batas waktu tunggu, sehingga foto Anda akan diperiksa langsung oleh petugas kebersihan (HITL).
+              </p>
+            </>
+          ) : isWaste ? (
             <>
               <h1>Laporan diterima. Terima kasih sudah peduli.</h1>
               <p>Simpan kode laporan Anda untuk memantau penanganan dan berdiskusi dengan asisten AI.</p>
@@ -2180,7 +2194,14 @@ function AnalysisPage({
                 e.currentTarget.src = FALLBACK_WASTE_SVG
               }}
             />
-            {isWaste ? (
+            {isUnverifiedFallback ? (
+              <div
+                className="figma-photo-detected-badge"
+                style={{ background: '#fef3c7', color: '#92400e', borderColor: '#fde68a' }}
+              >
+                <span>⚠ Menunggu Verifikasi Manual</span>
+              </div>
+            ) : isWaste ? (
               <div className="figma-photo-detected-badge">
                 <Check size={14} className="detected-check" />
                 <span>Sampah Terdeteksi</span>
@@ -2198,11 +2219,23 @@ function AnalysisPage({
               <h2>Hasil analisis foto</h2>
               <div className="figma-confidence-box">
                 <span className="conf-label">CONFIDENCE SCORE</span>
-                <span className="conf-value">{confidence}%</span>
+                <span className="conf-value">{isUnverifiedFallback ? '0%' : `${confidence}%`}</span>
               </div>
             </div>
 
-            {isWaste ? (
+            {isUnverifiedFallback ? (
+              <div className="figma-chips-row">
+                <span className="figma-analysis-chip chip-severity-sedang">
+                  Perlu Verifikasi Petugas (HITL)
+                </span>
+                <span className="figma-analysis-chip chip-rejected-sub">
+                  Belum Divalidasi AI
+                </span>
+                <span className="figma-analysis-chip chip-rejected-sub">
+                  Model: fallback-manual-review
+                </span>
+              </div>
+            ) : isWaste ? (
               <div className="figma-chips-row">
                 <span className={`figma-analysis-chip ${category === 'organik' ? 'chip-organic' : 'chip-inorganic'}`}>
                   {category.charAt(0).toUpperCase() + category.slice(1)}
@@ -2231,7 +2264,9 @@ function AnalysisPage({
             <p className="figma-analysis-text">{recommendation}</p>
 
             <div className="figma-analysis-footer-note">
-              {isWaste
+              {isUnverifiedFallback
+                ? 'Layanan AI sedang sibuk saat pengiriman. Foto wajib diverifikasi manual oleh petugas (HITL).'
+                : isWaste
                 ? 'Analisis AI bersifat rekomendasi. Menunggu validasi petugas (HITL).'
                 : 'Laporan ini ditolak secara otomatis oleh AI karena foto tidak memenuhi kriteria sampah kampus.'}
             </div>
@@ -2259,8 +2294,9 @@ function AnalysisPage({
             </button>
 
             <div className="figma-status-chip-row">
-              <span className={`figma-status-indicator-badge ${!isWaste ? 'rejected' : ''}`}>
-                <i className={!isWaste ? 'status-dot-red' : 'status-dot-orange'} /> {active.status || (isWaste ? 'Menunggu' : 'Ditolak')}
+              <span className={`figma-status-indicator-badge ${!isWaste && !isUnverifiedFallback ? 'rejected' : ''}`}>
+                <i className={!isWaste && !isUnverifiedFallback ? 'status-dot-red' : 'status-dot-orange'} />{' '}
+                {isUnverifiedFallback ? 'Menunggu Verifikasi' : active.status || (isWaste ? 'Menunggu' : 'Ditolak')}
               </span>
             </div>
 
@@ -2271,9 +2307,24 @@ function AnalysisPage({
           </section>
 
           <section className="panel figma-steps-card">
-            <h3>{isWaste ? 'Apa selanjutnya?' : 'Mengapa ditolak?'}</h3>
+            <h3>{isUnverifiedFallback ? 'Alur verifikasi manual' : isWaste ? 'Apa selanjutnya?' : 'Mengapa ditolak?'}</h3>
             <ol className="figma-steps-list">
-              {isWaste ? (
+              {isUnverifiedFallback ? (
+                <>
+                  <li>
+                    <span className="step-num">1.</span>
+                    <span>Laporan disimpan ke antrean verifikasi manual admin (HITL).</span>
+                  </li>
+                  <li>
+                    <span className="step-num">2.</span>
+                    <span>Petugas memeriksa apakah foto benar-benar titik sampah kampus.</span>
+                  </li>
+                  <li>
+                    <span className="step-num">3.</span>
+                    <span>Jika bukan sampah, petugas akan mengubah status menjadi Ditolak.</span>
+                  </li>
+                </>
+              ) : isWaste ? (
                 <>
                   <li>
                     <span className="step-num">1.</span>

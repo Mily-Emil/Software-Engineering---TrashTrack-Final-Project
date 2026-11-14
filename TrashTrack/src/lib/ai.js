@@ -23,7 +23,8 @@ export const DEFAULT_LOCATION = {
 }
 
 // Tema 10: Password admin default dibaca dari environment variable jika tersedia
-export const ADMIN_DEFAULT_PASSWORD = import.meta.env.VITE_ADMIN_DEFAULT_PASSWORD || 'UnklabAdmin2026!'
+export const ADMIN_DEFAULT_PASSWORD =
+  (typeof import.meta !== 'undefined' && import.meta.env?.VITE_ADMIN_DEFAULT_PASSWORD) || 'UnklabAdmin2026!'
 
 // Daftar Akun Admin Kelompok
 export const SEEDED_ADMIN_ACCOUNTS = [
@@ -166,7 +167,7 @@ export function getOrCreateDeviceId() {
 }
 
 // Tema 6: Menghapus metadata EXIF & kompresi foto menggunakan HTML5 Canvas
-export async function stripExifAndCompress(file, maxWidth = 1280, quality = 0.82) {
+export async function stripExifAndCompress(file, maxWidth = 800, quality = 0.78) {
   return new Promise((resolve) => {
     // Jika bukan file gambar atau lingkungan non-browser, kembalikan file asli
     if (!file || !file.type?.startsWith('image/') || typeof document === 'undefined') {
@@ -234,19 +235,19 @@ async function fileToBase64(file) {
 
 let lastVerifiedModel = 'gemini-3.5-flash-lite'
 
-// Memanggil endpoint Server Lokal (/api/gemini) dengan batas 10 detik (NFR-01)
-async function callServerGemini(contents, temperature = 0.1) {
+// Memanggil endpoint Server Lokal (/api/gemini) dengan dukungan failover antar-model
+async function callServerGemini(contents, temperature = 0.1, responseMimeType = undefined) {
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 10000)
+  const timeout = setTimeout(() => controller.abort(), 28000)
   try {
     const res = await fetch('/api/gemini', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ contents, temperature }),
+      body: JSON.stringify({ contents, temperature, responseMimeType }),
       signal: controller.signal
     })
     if (res.status === 504) {
-      throw new Error('Analisis foto melewati batas waktu 10 detik. Silakan kirim ulang laporan Anda.')
+      throw new Error('Analisis foto melewati batas waktu. Silakan kirim ulang laporan Anda.')
     }
     if (!res.ok) {
       return null
@@ -257,8 +258,8 @@ async function callServerGemini(contents, temperature = 0.1) {
     }
     return data?.text || null
   } catch (err) {
-    if (err?.name === 'AbortError' || /10 detik/i.test(err?.message || '')) {
-      throw new Error('Analisis foto melewati batas waktu 10 detik. Silakan kirim ulang laporan Anda.')
+    if (err?.name === 'AbortError' || /batas waktu/i.test(err?.message || '')) {
+      throw new Error('Analisis foto melewati batas waktu. Silakan kirim ulang laporan Anda.')
     }
     return null
   } finally {
@@ -266,13 +267,15 @@ async function callServerGemini(contents, temperature = 0.1) {
   }
 }
 
-// Tema 2: Validasi skema keluaran JSON dengan rubrik keparahan & ambang batas 0.70
+// Tema 2: Validasi skema keluaran JSON dengan rubrik keparahan, ambang batas 0.70, & guard penolakan objek non-sampah
 export function validateVisionJson(rawOrObj, modelName = lastVerifiedModel) {
   try {
-    const obj =
-      typeof rawOrObj === 'string'
-        ? JSON.parse(rawOrObj.replace(/```json|```/gi, '').trim())
-        : rawOrObj
+    let obj = rawOrObj
+    if (typeof rawOrObj === 'string') {
+      const cleaned = rawOrObj.replace(/```json|```/gi, '').trim()
+      const jsonMatch = cleaned.match(/\{[\s\S]*\}/)
+      obj = JSON.parse(jsonMatch ? jsonMatch[0] : cleaned)
+    }
     if (!obj || typeof obj.is_waste !== 'boolean') return null
 
     let score = Number(obj.confidence_score)
@@ -281,28 +284,36 @@ export function validateVisionJson(rawOrObj, modelName = lastVerifiedModel) {
     if (score > 1 && score <= 100) score = score / 100
     score = Math.min(1, Math.max(0, Number(score.toFixed(2))))
 
-    // Ambang batas validasi manusia jika confidence < 0.70 (Tema 2)
-    const needsReview = !obj.is_waste || score < 0.70
     const resolvedModel = obj.ai_model || modelName || 'gemini-3.5-flash-lite'
+    const combinedNotes = `${obj.detected_notes || ''} ${obj.recommendation || ''}`.toLowerCase()
 
-    if (!obj.is_waste) {
+    // Guard deterministik: jika catatan AI sendiri menyebutkan objek adalah boneka, karakter 3D, mainan,
+    // manusia/potret orang, atau screenshot, paksa is_waste = false meskipun model keliru mengeset true!
+    const nonWasteIndicators =
+      /\b(bukan sampah|bukan titik sampah|bukanlah sampah|tidak ada sampah|tidak ditemukan sampah|boneka|mainan|action figure|figurine|figurin|karakter 3d|model 3d|render 3d|animasi|kartun|plushie|patung|potret manusia|potret orang|wajah orang|foto selfie|sedang berbicara|tangkapan layar|screenshot|antarmuka web)\b/i
+    const forcedNotWaste =
+      !obj.is_waste ||
+      (nonWasteIndicators.test(combinedNotes) && !/\b(tumpukan sampah|tempat sampah penuh|sampah berserakan)\b/i.test(combinedNotes))
+
+    if (forcedNotWaste) {
       return {
         is_waste: false,
         category: null,
         severity: null,
-        confidence_score: score,
+        confidence_score: Math.max(score, 0.90),
         needs_review: true,
         ai_model: resolvedModel,
         detected_notes:
           obj.detected_notes ||
-          'Foto tidak terdeteksi sebagai sampah fisik (terdeteksi sebagai manusia, boneka/mainan, tangkapan layar, atau objek non-sampah).',
+          'Foto tidak terdeteksi sebagai sampah fisik (terdeteksi sebagai objek non-sampah seperti boneka/karakter 3D, manusia, atau tangkapan layar).',
         recommendation:
-          obj.recommendation ||
-          'Laporan ditolak. Harap unggah foto yang benar-benar menampilkan titik timbunan sampah di lingkungan kampus Universitas Klabat.',
+          'Laporan ditolak secara otomatis. Harap unggah foto yang benar-benar menampilkan titik timbunan sampah fisik di lingkungan kampus Universitas Klabat.',
         is_validated: false
       }
     }
 
+    // Ambang batas validasi manusia jika confidence < 0.70 (Tema 2)
+    const needsReview = score < 0.70
     const category = String(obj.category || '').toLowerCase()
     const severity = String(obj.severity || '').toLowerCase()
     const validCategory = ['organik', 'anorganik'].includes(category) ? category : 'anorganik'
@@ -328,47 +339,32 @@ export function validateVisionJson(rawOrObj, modelName = lastVerifiedModel) {
 export async function analyzeWasteClientFallback(file, description = '') {
   const combined = `${file?.name || ''} ${description || ''}`.toLowerCase()
   if (/timeout_test|gagal_api/i.test(combined)) {
-    throw new Error('Gemini API gagal atau melewati batas waktu 10 detik. Silakan kirim ulang laporan Anda.')
+    throw new Error('Gemini API gagal atau melewati batas waktu. Silakan kirim ulang laporan Anda.')
   }
 
   // 1. Panggil Gemini API melalui server (/api/gemini)
   try {
     const base64Data = await fileToBase64(file)
-    const basePrompt = `Anda adalah sistem deteksi dan verifikasi titik sampah di lingkungan kampus Universitas Klabat (Unklab).
-Instruksi: Analisis foto dengan teliti.
+    const basePrompt = `Anda adalah sistem verifikasi visual titik sampah kampus Universitas Klabat (Unklab).
+Tugas utama Anda adalah MEMBEDAKAN antara (A) tumpukan sampah nyata yang berserakan/menumpuk di lingkungan kampus vs (B) foto objek BUKAN SAMPAH.
 
-ATURAN UTAMA PENOLAKAN FOTO BUKAN SAMPAH:
-Jika foto menampilkan:
-- Manusia, wajah, potret orang, selfie, atau orang sedang beraktivitas/berbicara;
-- Boneka, mainan 3D, action figure, patung, atau karakter fiksi;
-- Tangkapan layar (screenshot), antarmuka website/aplikasi, grafis digital;
-- Kendaraan, hewan, atau gedung/ruangan bersih tanpa timbunan sampah fisik;
-MAKA ANDA WAJIB MENGEMBALIKAN:
-{
-  "is_waste": false,
-  "category": null,
-  "severity": null,
-  "confidence_score": 0.95,
-  "detected_notes": "Sebutkan objek yang terdeteksi dengan jelas (contoh: 'Foto menampilkan seseorang sedang berbicara di panggung, bukan titik sampah' atau 'Foto berupa boneka/karakter 3D, bukan sampah fisik kampus')",
-  "recommendation": "Laporan ditolak. Harap unggah foto yang benar-benar menampilkan titik sampah fisik di lingkungan kampus Unklab."
-}
+ATURAN WAJIB PENOLAKAN (is_waste: false):
+Anda WAJIB mengembalikan "is_waste": false apabila foto menampilkan:
+1. Boneka, mainan, karakter 3D, render CGI, action figure, figurin, plushie, kartun, atau objek pajangan (WALAUPUN terbuat dari plastik/kain, itu adalah OBJEK/MAINAN, BUKAN sampah kampus!).
+2. Manusia, wajah, selfie, foto profil, orang berpidato/beraktivitas di ruangan atau panggung.
+3. Tangkapan layar (screenshot), antarmuka aplikasi/web, meme, poster, atau teks digital.
+4. Ruangan bersih, gedung, kendaraan, hewan, atau benda pribadi utuh (laptop, botol minum/tumbler utuh di meja, tas, sepatu yang dipakai).
 
-JIKA FOTO BENAR-BENAR BERISI SAMPAH FISIK:
-- "is_waste": true
-- "category": "organik" (daun, ranting, sisa makanan) atau "anorganik" (plastik, botol, kaleng, kertas)
-- "severity": "rendah" (< 1 kantong kecil), "sedang" (1 kantong/tempat sampah penuh), "tinggi" (menumpuk besar/meluber ke jalan/B3)
-- "confidence_score": number (0.00 sampai 1.00)
-- "detected_notes": catatan tambahan jika ada sampah campuran/B3
-- "recommendation": saran pemilahan atau penanganan awal
+HANYA kembalikan "is_waste": true jika foto benar-benar memperlihatkan SAMPAH yang dibuang/berserakan/menumpuk di tanah, tempat sampah, selokan, atau sudut kampus!
 
-Indikator keluaran: Kembalikan HANYA JSON murni tanpa markdown:
+Kembalikan HANYA 1 objek JSON murni dengan skema:
 {
   "is_waste": boolean,
   "category": "organik" | "anorganik" | null,
   "severity": "rendah" | "sedang" | "tinggi" | null,
-  "confidence_score": number,
-  "detected_notes": string,
-  "recommendation": string
+  "confidence_score": number (0.00 sampai 1.00),
+  "detected_notes": "Penjelasan singkat objek yang terlihat di foto (misal: 'Foto menampilkan karakter boneka 3D kelinci, bukan titik sampah kampus')",
+  "recommendation": "Saran tindakan singkat"
 }`
 
     const firstRaw = await callServerGemini(
@@ -381,7 +377,8 @@ Indikator keluaran: Kembalikan HANYA JSON murni tanpa markdown:
           ]
         }
       ],
-      0.1
+      0.1,
+      'application/json'
     )
 
     if (firstRaw) {
@@ -389,7 +386,7 @@ Indikator keluaran: Kembalikan HANYA JSON murni tanpa markdown:
       if (firstValid) return firstValid
 
       // Retry 1 kali jika keluaran tidak valid (Subbab 3.2)
-      const strictPrompt = `${basePrompt}\nPERINGATAN: Respons sebelumnya tidak valid. Balas HANYA 1 baris JSON valid!`
+      const strictPrompt = `${basePrompt}\nPERINGATAN: Respons sebelumnya tidak valid. Balas HANYA 1 objek JSON valid!`
       const retryRaw = await callServerGemini(
         [
           {
@@ -400,27 +397,29 @@ Indikator keluaran: Kembalikan HANYA JSON murni tanpa markdown:
             ]
           }
         ],
-        0.0
+        0.0,
+        'application/json'
       )
       const retryValid = retryRaw ? validateVisionJson(retryRaw, lastVerifiedModel) : null
       if (retryValid) return retryValid
     }
   } catch (err) {
-    if (/10 detik/i.test(err?.message || '')) throw err
+    console.warn('Gemini VLM call error:', err?.message)
   }
 
   // 2. Fallback transparan (Tema 1: Tanpa memalsukan hasil AI dari kata kunci)
-  // Jika Gemini API tidak dapat dijangkau, laporan ditandai needs_review: true dengan confidence 0.00
-  // agar masuk ke antrean validasi manual petugas (HITL) dan tidak menyamar sebagai hasil Gemini.
+  // Jika Gemini API tidak dapat dijangkau atau timeout, tandai is_unverified_fallback: true & confidence 0.00
+  // agar masuk ke antrean validasi manual petugas (HITL) dan TIDAK diklaim sebagai "Sampah Terdeteksi".
   return {
     is_waste: true,
+    is_unverified_fallback: true,
     category: 'anorganik',
     severity: 'sedang',
     confidence_score: 0.0,
     needs_review: true,
     ai_model: 'fallback-manual-review',
-    detected_notes: 'Layanan Gemini VLM tidak dapat dijangkau. Laporan disimpan ke antrean verifikasi manual petugas (HITL).',
-    recommendation: 'Menunggu pemeriksaan visual dan klasifikasi manual oleh petugas kebersihan kampus.',
+    detected_notes: 'Analisis AI tidak selesai dalam batas waktu atau layanan sedang sibuk. Laporan masuk antrean validasi manual admin (HITL).',
+    recommendation: 'Menunggu pemeriksaan visual secara manual oleh petugas kebersihan kampus.',
     is_validated: false
   }
 }
@@ -430,6 +429,9 @@ export function buildInitialAdvice(analysis, coords) {
   if (analysis?.is_waste === false) {
     const reason = analysis?.detected_notes || 'Objek dalam foto bukan merupakan sampah fisik di kampus.'
     return `Halo! Berdasarkan analisis visual Gemini AI, foto yang dilaporkan TIDAK TERDETEKSI sebagai sampah (${reason}). Laporan ini ditolak oleh sistem dan tidak memerlukan tindakan pembersihan. Jika Anda menemukan titik sampah nyata di lingkungan Universitas Klabat, silakan unggah foto baru.`
+  }
+  if (analysis?.is_unverified_fallback || analysis?.ai_model === 'fallback-manual-review' || Number(analysis?.confidence_score) === 0) {
+    return `Halo! Saat laporan ini dikirim, layanan analisis visual otomatis sedang sibuk sehingga foto Anda disimpan langsung ke dalam antrean verifikasi manual petugas kebersihan Universitas Klabat (HITL). Petugas akan segera meninjau foto Anda.`
   }
   const category = analysis?.category || 'anorganik'
   const severity = analysis?.severity || 'sedang'
@@ -442,7 +444,12 @@ export function buildInitialAdvice(analysis, coords) {
 }
 
 export async function generateInitialAdviceWithAI(analysis, coords) {
-  if (analysis?.is_waste === false) {
+  if (
+    analysis?.is_waste === false ||
+    analysis?.is_unverified_fallback ||
+    analysis?.ai_model === 'fallback-manual-review' ||
+    Number(analysis?.confidence_score) === 0
+  ) {
     return buildInitialAdvice(analysis, coords)
   }
   const category = analysis?.category || 'anorganik'
