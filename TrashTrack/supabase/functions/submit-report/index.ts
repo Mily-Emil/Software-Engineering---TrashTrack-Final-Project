@@ -86,7 +86,7 @@ function parseAndValidateVisionJson(rawText: string): VisionAnalysis | null {
         is_waste: false,
         category: '',
         severity: '',
-        confidence_score: Math.max(confidence, 0.90),
+        confidence_score: 0.0,
         detected_notes:
           parsed.detected_notes ||
           'Foto tidak terdeteksi sebagai sampah fisik (terdeteksi sebagai objek non-sampah seperti boneka/karakter 3D, manusia, atau tangkapan layar).',

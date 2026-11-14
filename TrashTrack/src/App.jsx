@@ -1581,7 +1581,7 @@ function App() {
                 <div>
                   <strong>Hasil Asli Prediksi AI (Gemini VLM)</strong>
                   <p>
-                    Kategori Asli: <strong>{selected.analysis?.category || 'organik'}</strong> · Keparahan Asli: <strong>{selected.analysis?.severity || 'sedang'}</strong> · Confidence: <strong>{Math.round((selected.analysis?.confidence_score || 0.9) * 100)}%</strong>
+                    Kategori Asli: <strong>{selected.analysis?.is_waste === false ? 'Bukan Sampah' : selected.analysis?.category || 'organik'}</strong> · Keparahan Asli: <strong>{selected.analysis?.is_waste === false ? '—' : selected.analysis?.severity || 'sedang'}</strong> · Confidence: <strong>{selected.analysis?.is_waste === false || selected.status === 'Ditolak' ? 0 : Math.round((selected.analysis?.confidence_score ?? 0.9) * 100)}%</strong>
                   </p>
                   {selected.analysis?.detected_notes && (
                     <p style={{ marginTop: '4px', fontSize: '12px', color: '#64748b' }}>
@@ -1946,7 +1946,11 @@ function ReportsPage({
                     <Severity severity={r.analysis?.severity} />
                   </td>
                   <td className="muted-cell">
-                    {r.analysis?.is_validated ? '✓ Tervalidasi' : `${Math.round((r.analysis?.confidence_score || 0.9) * 100)}% (Belum)`}
+                    {r.analysis?.is_validated
+                      ? '✓ Tervalidasi'
+                      : r.analysis?.is_waste === false || r.status === 'Ditolak'
+                      ? '0% (Ditolak)'
+                      : `${Math.round((r.analysis?.confidence_score ?? 0.9) * 100)}% (Belum)`}
                   </td>
                   <td>
                     <Status status={r.status} />
@@ -2066,8 +2070,10 @@ function AnalysisPage({
     /tidak selesai dalam batas waktu|tidak dapat dijangkau/i.test(active.analysis?.detected_notes || '')
   const isWaste = active.analysis?.is_waste !== false && active.status !== 'Ditolak' && !isUnverifiedFallback
   const rawConfidence = Number(active.analysis?.confidence_score ?? 0.94)
-  // confidence_score disimpan sebagai desimal 0–1; konversi ke persen bila perlu
-  const confidence = Math.round(rawConfidence <= 1 ? rawConfidence * 100 : rawConfidence)
+  // Opsi A: Jika bukan sampah (Ditolak) atau fallback manual, tampilkan Confidence Score 0%
+  const confidence = !isWaste || isUnverifiedFallback
+    ? 0
+    : Math.round(rawConfidence <= 1 ? rawConfidence * 100 : rawConfidence)
   const category = (active.analysis?.category || 'organik').toLowerCase()
   const severity = (active.analysis?.severity || 'sedang').toLowerCase()
   const recommendation =

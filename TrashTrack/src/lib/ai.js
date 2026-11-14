@@ -300,7 +300,7 @@ export function validateVisionJson(rawOrObj, modelName = lastVerifiedModel) {
         is_waste: false,
         category: null,
         severity: null,
-        confidence_score: Math.max(score, 0.90),
+        confidence_score: 0.0,
         needs_review: true,
         ai_model: resolvedModel,
         detected_notes:
