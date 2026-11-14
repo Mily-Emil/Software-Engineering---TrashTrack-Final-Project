@@ -331,7 +331,7 @@ Indikator keluaran: Buat ringkasan terstruktur dalam Bahasa Indonesia yang memua
 
     const { data: claimed, error: limitError } = await supabase.rpc('claim_report_slot', { p_client_hash: clientHash })
     if (limitError) {
-      await supabase.rpc('claim_report_slot', { p_ip_hash: ipHash }).catch(() => {})
+      await supabase.rpc('claim_report_slot', { p_ip_hash: ipHash })
     } else if (!claimed) {
       return json({ error: 'Batas 5 laporan per jam tercapai. Silakan coba lagi nanti.' }, 429)
     }
