@@ -183,8 +183,36 @@ end $$;
 revoke all on function public.claim_report_slot(text) from public, anon, authenticated;
 grant execute on function public.claim_report_slot(text) to service_role;
 
--- Tema 1, 2, 3, 7, 8, 9: Public report submission RPC
--- Alur: Laporan selalu disimpan ke DB. Jika AI menolak atau gagal, status Menunggu + needs_review=true
+-- Tema 3: Validasi Poligon Batas Kampus Universitas Klabat (Algoritma Ray-Casting 7 Titik Perimeter)
+create or replace function public.is_in_unklab_polygon(p_lat double precision, p_lng double precision) returns boolean
+language plpgsql immutable set search_path = '' as $$
+declare
+  v_lats double precision[] := array[1.4228, 1.4232, 1.4202, 1.4148, 1.4124, 1.4130, 1.4185];
+  v_lngs double precision[] := array[124.9805, 124.9862, 124.9890, 124.9888, 124.9850, 124.9796, 124.9792];
+  v_inside boolean := false;
+  v_n integer := 7;
+  v_j integer := 7;
+  v_xi double precision;
+  v_yi double precision;
+  v_xj double precision;
+  v_yj double precision;
+begin
+  if p_lat is null or p_lng is null then return false; end if;
+  for v_i in 1..v_n loop
+    v_xi := v_lats[v_i]; v_yi := v_lngs[v_i];
+    v_xj := v_lats[v_j]; v_yj := v_lngs[v_j];
+    if ((v_yi > p_lng) <> (v_yj > p_lng)) and
+       (p_lat < ((v_xj - v_xi) * (p_lng - v_yi)) / ((v_yj - v_yi) + 1e-12) + v_xi) then
+      v_inside := not v_inside;
+    end if;
+    v_j := v_i;
+  end loop;
+  return v_inside;
+end $$;
+grant execute on function public.is_in_unklab_polygon(double precision, double precision) to anon, authenticated, service_role;
+
+-- Tema 1, 2, 3, 4, 7, 8, 9: Public report submission RPC
+-- Alur: Laporan selalu disimpan ke DB. Jika AI menolak atau gagal, status Ditolak / Menunggu + needs_review=true
 drop function if exists public.submit_report(text, double precision, double precision, text, jsonb, text);
 drop function if exists public.submit_report(text, double precision, double precision, text, jsonb, text, text, double precision, text, text);
 create or replace function public.submit_report(
@@ -202,14 +230,17 @@ create or replace function public.submit_report(
 declare
   v_headers jsonb := coalesce(nullif(current_setting('request.headers', true), '')::jsonb, '{}'::jsonb);
   v_ip text := coalesce(split_part(v_headers->>'x-forwarded-for', ',', 1), v_headers->>'cf-connecting-ip', 'local-client');
-  -- Salted hash (kombinasi IP + device_id jika ada)
-  v_salt text := 'unklab_trashtrack_salt_2026';
-  v_client_key text := coalesce(p_device_id, v_ip);
+  -- Tema 4: Salted hash menggunakan gabungan device_id DAN IP (bukan menggantikan IP)
+  v_salt text := coalesce(nullif(current_setting('app.settings.rate_limit_salt', true), ''), 'unklab_trashtrack_salt_2026');
+  v_client_key text := coalesce(nullif(trim(p_device_id), ''), 'anon') || ':' || v_ip;
   v_hash text := md5(v_client_key || ':' || v_salt);
+  v_ip_only_hash text := md5('ip_only:' || v_ip || ':' || v_salt);
   v_count integer;
+  v_ip_count integer;
   v_report public.reports%rowtype;
-  -- Tema 9: Format kode acak kriptografis 4 karakter non-ambigu (contoh: TT-2026-K9M2)
+  -- Tema 9: Format kode acak kriptografis 8 karakter non-ambigu (~1.1 triliun kombinasi, contoh: TT-2026-K9M2X7P4)
   v_random_chars text := '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+  v_random_bytes bytea := extensions.gen_random_bytes(8);
   v_suffix text := '';
   v_idx integer;
   v_advice text;
@@ -220,26 +251,29 @@ declare
   v_needs_review boolean := false;
   v_detected_notes text;
 begin
-  -- 1. Rate Limit per Perangkat / Client Hash (NFR-04)
+  -- 1. Rate Limit Ganda: 5 laporan/jam per kombinasi (Device + IP) & 25 laporan/jam per IP Kampus (mencegah bypass hapus localStorage)
   perform pg_advisory_xact_lock(hashtext(v_hash));
   delete from public.report_rate_limits where created_at < now() - interval '1 hour';
   select count(*) into v_count from public.report_rate_limits where client_hash=v_hash and created_at >= now()-interval '1 hour';
-  if v_count >= 5 then raise exception 'Batas 5 laporan per jam tercapai. Silakan coba lagi nanti.'; end if;
+  if v_count >= 5 then raise exception 'Batas 5 laporan per jam per perangkat tercapai. Silakan coba lagi nanti.'; end if;
 
-  -- 2. Koordinat Kampus Unklab (NFR-06)
-  if p_latitude not between 1.4120 and 1.4235 or p_longitude not between 124.9790 and 124.9895 then
-    raise exception 'Ditolak: Lokasi berada di luar area kampus Universitas Klabat.';
+  select count(*) into v_ip_count from public.report_rate_limits where client_hash=v_ip_only_hash and created_at >= now()-interval '1 hour';
+  if v_ip_count >= 25 then raise exception 'Batas pengiriman jaringan per jam tercapai. Silakan coba lagi nanti.'; end if;
+
+  -- 2. Validasi Poligon Batas Kampus Unklab (Tema 3 & NFR-06)
+  if not public.is_in_unklab_polygon(p_latitude, p_longitude) then
+    raise exception 'Ditolak: Lokasi berada di luar poligon batas area kampus Universitas Klabat.';
   end if;
 
-  -- Generate 4-char non-ambiguous random code
-  for i in 1..4 loop
-    v_idx := 1 + floor(random() * length(v_random_chars))::integer;
+  -- 3. Generate 8-char cryptographic non-ambiguous code menggunakan pgcrypto gen_random_bytes(8)
+  for i in 0..7 loop
+    v_idx := 1 + (get_byte(v_random_bytes, i) % length(v_random_chars));
     v_suffix := v_suffix || substr(v_random_chars, v_idx, 1);
   end loop;
 
-  -- 3. Parse Analisis AI dengan fallback jika bukan sampah atau confidence rendah
+  -- 4. Parse Analisis AI dengan fallback jika bukan sampah atau confidence rendah
   v_is_waste := coalesce((p_analysis->>'is_waste')::boolean, true);
-  v_confidence := least(1, greatest(0, coalesce((p_analysis->>'confidence_score')::numeric, 0.85)));
+  v_confidence := least(1, greatest(0, coalesce((p_analysis->>'confidence_score')::numeric, 0.0)));
   v_detected_notes := coalesce(p_analysis->>'detected_notes', p_analysis->>'notes');
 
   -- Jika AI mendeteksi bukan sampah atau confidence < 0.70, tandai perlu ditinjau admin
@@ -261,7 +295,7 @@ begin
     v_needs_review := true;
   end if;
 
-  insert into public.report_rate_limits(client_hash) values(v_hash);
+  insert into public.report_rate_limits(client_hash) values(v_hash), (v_ip_only_hash);
 
   -- 4. Simpan Laporan
   insert into public.reports(
@@ -409,14 +443,14 @@ begin
 end $$;
 grant execute on function public.append_chat_message(text, public.chat_sender, text) to anon, authenticated;
 
--- Tema 6: Peta publik dengan privasi (tanpa ip_hash/device_id)
+-- Tema 6: Peta publik dengan privasi penuh (tanpa photo_url, ip_hash, atau device_id)
 create or replace function public.get_public_reports() returns jsonb
 language sql stable security definer set search_path = '' as $$
   select coalesce(jsonb_agg(
     jsonb_build_object(
       'id', r.id,
       'report_code', r.report_code,
-      'photo_url', r.photo_url,
+      'photo_url', null,
       'latitude', r.latitude,
       'longitude', r.longitude,
       'description', r.description,
@@ -435,6 +469,7 @@ language sql stable security definer set search_path = '' as $$
   ), '[]'::jsonb)
   from public.reports r
   left join public.ai_analysis a on a.report_id = r.id
+  where r.status::text <> 'Ditolak'
 $$;
 grant execute on function public.get_public_reports() to anon, authenticated;
 

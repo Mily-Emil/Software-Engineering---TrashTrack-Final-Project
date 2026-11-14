@@ -15,12 +15,41 @@ const sha256 = async (value: string) =>
     .map((x: number) => x.toString(16).padStart(2, '0'))
     .join('')
 
-// Batas area kampus Universitas Klabat (Unklab), Jl. Arnold Mononutu, Airmadidi (NFR-06)
-const UNKLAB_BOUNDS = {
-  minLat: 1.4120,
-  maxLat: 1.4235,
-  minLng: 124.9790,
-  maxLng: 124.9895
+// Poligon batas area kampus Universitas Klabat (Unklab), Jl. Arnold Mononutu, Airmadidi (Tema 3 & NFR-06)
+const UNKLAB_POLYGON = [
+  { lat: 1.4228, lng: 124.9805 },
+  { lat: 1.4232, lng: 124.9862 },
+  { lat: 1.4202, lng: 124.9890 },
+  { lat: 1.4148, lng: 124.9888 },
+  { lat: 1.4124, lng: 124.9850 },
+  { lat: 1.4130, lng: 124.9796 },
+  { lat: 1.4185, lng: 124.9792 }
+]
+
+function isInUnklabPolygon(lat: number, lng: number): boolean {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false
+  let inside = false
+  for (let i = 0, j = UNKLAB_POLYGON.length - 1; i < UNKLAB_POLYGON.length; j = i++) {
+    const xi = UNKLAB_POLYGON[i].lat, yi = UNKLAB_POLYGON[i].lng
+    const xj = UNKLAB_POLYGON[j].lat, yj = UNKLAB_POLYGON[j].lng
+    const intersect =
+      yi > lng !== yj > lng &&
+      lat < ((xj - xi) * (lng - yi)) / (yj - yi + 1e-12) + xi
+    if (intersect) inside = !inside
+  }
+  return inside
+}
+
+// Generator kode laporan kriptografis 8 karakter non-ambigu (~1.1 triliun kombinasi, Tema 9)
+function generateReportCode(): string {
+  const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ'
+  const buf = new Uint8Array(8)
+  crypto.getRandomValues(buf)
+  let suffix = ''
+  for (let i = 0; i < 8; i++) {
+    suffix += chars[buf[i] % chars.length]
+  }
+  return `TT-${new Date().getFullYear()}-${suffix}`
 }
 
 interface VisionAnalysis {
@@ -28,6 +57,7 @@ interface VisionAnalysis {
   category: 'organik' | 'anorganik' | ''
   severity: 'rendah' | 'sedang' | 'tinggi' | ''
   confidence_score: number
+  ai_model?: string
 }
 
 // Validasi skema keluaran JSON sesuai Tabel 2 dokumen CogITo
@@ -96,19 +126,13 @@ async function analyzeWastePhoto(
   photo: File,
   description: string
 ): Promise<VisionAnalysis> {
-  const nameAndDesc = `${photo.name} ${description}`.toLowerCase()
   if (!apiKey) {
-    if (/bukan|kosong|wajah|selfie|mobil|gedung_bersih|tanpa_sampah/i.test(nameAndDesc)) {
-      return { is_waste: false, category: '', severity: '', confidence_score: 0.94 }
-    }
-    const isOrganic = /daun|makanan|sisa|buah|sayur|ranting|rumput|nasi|kertas_basah|organik/i.test(nameAndDesc)
-    const isHigh = /banyak|menumpuk|penuh|parah|besar|meluber|bau|tinggi/i.test(nameAndDesc)
-    const isLow = /sedikit|kecil|satu|rendah/i.test(nameAndDesc)
     return {
       is_waste: true,
-      category: isOrganic ? 'organik' : 'anorganik',
-      severity: isHigh ? 'tinggi' : isLow ? 'rendah' : 'sedang',
-      confidence_score: 0.92
+      category: 'anorganik',
+      severity: 'sedang',
+      confidence_score: 0.0,
+      ai_model: 'fallback-manual-review'
     }
   }
 
@@ -248,20 +272,13 @@ Indikator keluaran: Buat ringkasan terstruktur dalam Bahasa Indonesia yang memua
     if (photo.size > 5 * 1024 * 1024) {
       return json({ error: 'Ukuran berkas melebihi batas maksimal 5 MB.' }, 400)
     }
-    if (
-      !Number.isFinite(latitude) ||
-      latitude < UNKLAB_BOUNDS.minLat ||
-      latitude > UNKLAB_BOUNDS.maxLat ||
-      !Number.isFinite(longitude) ||
-      longitude < UNKLAB_BOUNDS.minLng ||
-      longitude > UNKLAB_BOUNDS.maxLng
-    ) {
-      return json({ error: 'Ditolak: Lokasi berada di luar area kampus Universitas Klabat.' }, 400)
+    if (!isInUnklabPolygon(latitude, longitude)) {
+      return json({ error: 'Ditolak: Lokasi berada di luar poligon batas area kampus Universitas Klabat.' }, 400)
     }
 
     const ip = req.headers.get('x-forwarded-for')?.split(',')[0].trim() || req.headers.get('cf-connecting-ip') || 'unknown-client'
     const ipHash = await sha256(ip)
-    const clientToken = deviceId ? `${deviceId}:${ip}` : ip
+    const clientToken = deviceId ? `${deviceId}:${ip}` : `anon:${ip}`
     const clientHash = await sha256(clientToken)
 
     const supabase = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!, {
@@ -270,13 +287,18 @@ Indikator keluaran: Buat ringkasan terstruktur dalam Bahasa Indonesia yang memua
 
     const { data: claimed, error: limitError } = await supabase.rpc('claim_report_slot', { p_client_hash: clientHash })
     if (limitError) {
-      // Fallback jika DB masih menggunakan signature lama
       await supabase.rpc('claim_report_slot', { p_ip_hash: ipHash }).catch(() => {})
     } else if (!claimed) {
       return json({ error: 'Batas 5 laporan per jam tercapai. Silakan coba lagi nanti.' }, 429)
     }
 
-    let analysis: VisionAnalysis = { is_waste: true, category: 'organik', severity: 'rendah', confidence_score: 0.8 }
+    let analysis: VisionAnalysis = {
+      is_waste: true,
+      category: 'anorganik',
+      severity: 'sedang',
+      confidence_score: 0.0,
+      ai_model: 'fallback-manual-review'
+    }
     let needsReview = false
     try {
       analysis = await analyzeWastePhoto(geminiKey, photo, description)
@@ -287,7 +309,7 @@ Indikator keluaran: Buat ringkasan terstruktur dalam Bahasa Indonesia yang memua
       needsReview = true
     }
 
-    const reportCode = `TT-${new Date().getFullYear()}-${crypto.randomUUID().slice(0, 4).toUpperCase()}`
+    const reportCode = generateReportCode()
     const objectPath = `${reportCode}/${crypto.randomUUID()}.${photo.type === 'image/png' ? 'png' : 'jpg'}`
     const { error: uploadError } = await supabase.storage
       .from('report-photos')

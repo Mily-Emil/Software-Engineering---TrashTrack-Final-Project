@@ -58,6 +58,42 @@ const dateLabel = date =>
       }).format(new Date(date))
     : 'Baru saja'
 
+const ADMIN_SESSION_TTL_MS = 2 * 60 * 60 * 1000 // Masa berlaku sesi Admin: 2 jam (Tema 10)
+const LOCKOUT_STORAGE_KEY = 'unklab_admin_lockout'
+
+function readValidSessionProfile() {
+  try {
+    const raw = sessionStorage.getItem('unklab_admin_profile')
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    if (!parsed?.login_at || Date.now() - Number(parsed.login_at) > ADMIN_SESSION_TTL_MS) {
+      sessionStorage.removeItem('unklab_admin_profile')
+      return null
+    }
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+function readLockoutState() {
+  try {
+    const raw = localStorage.getItem(LOCKOUT_STORAGE_KEY)
+    if (!raw) return { count: 0, until: null }
+    const parsed = JSON.parse(raw)
+    if (parsed?.until && Date.now() >= Number(parsed.until)) {
+      localStorage.removeItem(LOCKOUT_STORAGE_KEY)
+      return { count: 0, until: null }
+    }
+    return {
+      count: Number(parsed?.count || 0),
+      until: parsed?.until ? Number(parsed.until) : null
+    }
+  } catch {
+    return { count: 0, until: null }
+  }
+}
+
 function App() {
   const [page, setPage] = useState('overview')
   const [reports, setReports] = useState([])
@@ -69,21 +105,8 @@ function App() {
   const [modal, setModal] = useState('')
   const [mobileMenu, setMobileMenu] = useState(false)
   const [notice, setNotice] = useState('')
-  const [isAdmin, setIsAdmin] = useState(() => {
-    try {
-      return Boolean(sessionStorage.getItem('unklab_admin_profile'))
-    } catch {
-      return false
-    }
-  })
-  const [adminProfile, setAdminProfile] = useState(() => {
-    try {
-      const raw = sessionStorage.getItem('unklab_admin_profile')
-      return raw ? JSON.parse(raw) : null
-    } catch {
-      return null
-    }
-  })
+  const [isAdmin, setIsAdmin] = useState(() => Boolean(readValidSessionProfile()))
+  const [adminProfile, setAdminProfile] = useState(() => readValidSessionProfile())
   const [loginEmail, setLoginEmail] = useState('admin@unklab.ac.id')
   const [loginPassword, setLoginPassword] = useState('')
   const [session, setSession] = useState(null)
@@ -101,8 +124,8 @@ function App() {
   const [coords, setCoords] = useState(DEFAULT_LOCATION)
   const [locationSource, setLocationSource] = useState('manual')
   const [locationAccuracy, setLocationAccuracy] = useState(null)
-  const [failedLoginCount, setFailedLoginCount] = useState(0)
-  const [lockoutUntil, setLockoutUntil] = useState(null)
+  const [failedLoginCount, setFailedLoginCount] = useState(() => readLockoutState().count)
+  const [lockoutUntil, setLockoutUntil] = useState(() => readLockoutState().until)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [submissionTimestamps, setSubmissionTimestamps] = useState([])
   const [reportCode, setReportCode] = useState('')
@@ -110,6 +133,22 @@ function App() {
   const [summaryPeriod, setSummaryPeriod] = useState(7)
   const [latestSummary, setLatestSummary] = useState(null)
   const [isSummaryLoading, setIsSummaryLoading] = useState(false)
+
+  // Pengecekan berkala kedaluwarsa sesi Admin (Tema 10: auto-logout setelah 2 jam)
+  useEffect(() => {
+    if (!isAdmin) return
+    const checkExpiry = () => {
+      const valid = readValidSessionProfile()
+      if (!valid) {
+        setIsAdmin(false)
+        setAdminProfile(null)
+        supabase?.auth?.signOut?.().catch(() => {})
+        setNotice('Sesi login Admin telah kedaluwarsa (batas 2 jam). Silakan login kembali.')
+      }
+    }
+    const timer = setInterval(checkExpiry, 30000)
+    return () => clearInterval(timer)
+  }, [isAdmin])
 
   // Muat sesi autentikasi Admin (FR-06)
   useEffect(() => {
@@ -123,9 +162,11 @@ function App() {
         .eq('id', next.user.id)
         .maybeSingle()
       if (profile) {
+        const existing = readValidSessionProfile()
+        const withTimestamp = { ...profile, login_at: existing?.login_at || Date.now() }
         setIsAdmin(true)
-        setAdminProfile(profile)
-        sessionStorage.setItem('unklab_admin_profile', JSON.stringify(profile))
+        setAdminProfile(withTimestamp)
+        sessionStorage.setItem('unklab_admin_profile', JSON.stringify(withTimestamp))
       }
     }
     supabase.auth.getSession().then(({ data }) => applySession(data.session))
@@ -571,12 +612,14 @@ function App() {
     }
   }
 
-  // Login Admin (Tema 10: Proteksi Brute-Force 5x Percobaan & Sesi Terbatas)
+  // Login Admin (Tema 10: Proteksi Brute-Force 5x Percobaan Persisten di localStorage & Sesi Terbatas 2 Jam)
   const login = async e => {
     e.preventDefault()
 
-    if (lockoutUntil && Date.now() < lockoutUntil) {
-      const waitMin = Math.ceil((lockoutUntil - Date.now()) / 60000)
+    const currentLock = readLockoutState()
+    const activeLockUntil = currentLock.until || lockoutUntil
+    if (activeLockUntil && Date.now() < activeLockUntil) {
+      const waitMin = Math.ceil((activeLockUntil - Date.now()) / 60000)
       setNotice(`Akun terkunci sementara karena terlalu banyak percobaan gagal. Silakan tunggu ${waitMin} menit lagi.`)
       return
     }
@@ -598,16 +641,22 @@ function App() {
           .select('id, name, email')
           .eq('id', data.user.id)
           .maybeSingle()
-        const resolvedProfile = profile || seededMatch || {
-          id: data.user.id,
-          name: data.user.user_metadata?.name || 'Admin Kebersihan Unklab',
-          email: data.user.email
+        const resolvedProfile = {
+          ...(profile || seededMatch || {
+            id: data.user.id,
+            name: data.user.user_metadata?.name || 'Admin Kebersihan Unklab',
+            email: data.user.email
+          }),
+          login_at: Date.now()
         }
         setIsAdmin(true)
         setAdminProfile(resolvedProfile)
         setFailedLoginCount(0)
         setLockoutUntil(null)
-        sessionStorage.setItem('unklab_admin_profile', JSON.stringify({ ...resolvedProfile, login_at: Date.now() }))
+        try {
+          localStorage.removeItem(LOCKOUT_STORAGE_KEY)
+        } catch {}
+        sessionStorage.setItem('unklab_admin_profile', JSON.stringify(resolvedProfile))
         setLoginPassword('')
         setModal('')
         setPage('reports')
@@ -616,13 +665,17 @@ function App() {
       }
     }
 
-    // 2. Verifikasi Seed Basis Data Kelompok
+    // 2. Verifikasi Akun Admin Kelompok dari Environment Variable (.env)
     if (seededMatch && passwordInput === ADMIN_DEFAULT_PASSWORD) {
+      const withLoginAt = { ...seededMatch, login_at: Date.now() }
       setIsAdmin(true)
-      setAdminProfile(seededMatch)
+      setAdminProfile(withLoginAt)
       setFailedLoginCount(0)
       setLockoutUntil(null)
-      sessionStorage.setItem('unklab_admin_profile', JSON.stringify({ ...seededMatch, login_at: Date.now() }))
+      try {
+        localStorage.removeItem(LOCKOUT_STORAGE_KEY)
+      } catch {}
+      sessionStorage.setItem('unklab_admin_profile', JSON.stringify(withLoginAt))
       setLoginPassword('')
       setModal('')
       setPage('reports')
@@ -630,13 +683,19 @@ function App() {
       return
     }
 
-    const nextFails = failedLoginCount + 1
+    const nextFails = (currentLock.count || failedLoginCount) + 1
     setFailedLoginCount(nextFails)
     if (nextFails >= 5) {
       const lockTime = Date.now() + 15 * 60 * 1000
       setLockoutUntil(lockTime)
+      try {
+        localStorage.setItem(LOCKOUT_STORAGE_KEY, JSON.stringify({ count: nextFails, until: lockTime }))
+      } catch {}
       setNotice('5 kali percobaan login gagal berturut-turut. Akses login dibekukan selama 15 menit demi keamanan.')
     } else {
+      try {
+        localStorage.setItem(LOCKOUT_STORAGE_KEY, JSON.stringify({ count: nextFails, until: null }))
+      } catch {}
       setNotice(`Login ditolak: Email atau kata sandi salah. Percobaan tersisa: ${5 - nextFails} kali.`)
     }
   }
@@ -1344,12 +1403,12 @@ function App() {
                 name="password"
                 value={loginPassword}
                 onChange={e => setLoginPassword(e.target.value)}
-                placeholder="Masukkan kata sandi (UnklabAdmin2026!)"
+                placeholder="Masukkan kata sandi Admin"
                 required
               />
             </div>
             <div className="form-info">
-              <ShieldCheck size={15} /> Password akun kelompok: <b>UnklabAdmin2026!</b> (terenkripsi bcrypt).
+              <ShieldCheck size={15} /> Autentikasi dilindungi pembatasan 5x percobaan gagal (lockout 15 menit) dan masa aktif sesi 2 jam.
             </div>
             <button className="btn btn-primary btn-wide" type="submit">
               <LogIn size={16} /> Masuk ke Dashboard Admin
@@ -1413,21 +1472,48 @@ function App() {
           {detailTab === 'Detail laporan' || !isAdmin ? (
             <div className="detail-layout">
               <div className="detail-photo" style={{ overflow: 'hidden', position: 'relative' }}>
-                <img
-                  src={resolveReportPhoto(selected)}
-                  alt={selected.report_code}
-                  style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '14px' }}
-                  onError={e => {
-                    e.currentTarget.onerror = null
-                    e.currentTarget.src = FALLBACK_WASTE_SVG
-                  }}
-                />
+                {isAdmin ? (
+                  <img
+                    src={resolveReportPhoto(selected)}
+                    alt={selected.report_code}
+                    style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '14px' }}
+                    onError={e => {
+                      e.currentTarget.onerror = null
+                      e.currentTarget.src = FALLBACK_WASTE_SVG
+                    }}
+                  />
+                ) : (
+                  <div
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      minHeight: '220px',
+                      borderRadius: '14px',
+                      background: '#f1f5f3',
+                      border: '1px dashed #cbd5e1',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      padding: '24px',
+                      textAlign: 'center',
+                      color: '#334155',
+                      gap: '8px'
+                    }}
+                  >
+                    <ShieldCheck size={28} color="#1b6943" />
+                    <strong style={{ fontSize: '14px' }}>Foto Dilindungi (Moderasi Privasi)</strong>
+                    <span style={{ fontSize: '12px', color: '#64748b', lineHeight: 1.5 }}>
+                      Demi privasi & moderasi konten publik (Tema 6), peta publik hanya menampilkan titik lokasi, kategori, dan status. Foto asli hanya dapat diakses oleh Admin Kebersihan.
+                    </span>
+                  </div>
+                )}
               </div>
               <div className="detail-info">
                 <div className="detail-status-row">
                   <Status status={selected.status} />
                   <span className="confidence">
-                    <Sparkles size={14} /> AI {Math.round((selected.analysis?.confidence_score || 0.9) * 100)}% yakin
+                    <Sparkles size={14} /> AI {Math.round((selected.analysis?.confidence_score ?? 0.9) * 100)}% yakin
                     {selected.analysis?.is_validated ? ' (Tervalidasi Admin)' : ''}
                   </span>
                 </div>
@@ -1439,6 +1525,7 @@ function App() {
                 <div className="location-meta-chip">
                   <span>Sumber: <strong>{selected.location_source === 'gps' ? 'GPS Perangkat' : 'Pilihan Peta Kampus'}</strong></span>
                   {selected.location_accuracy && <span>Akurasi: ±{selected.location_accuracy}m</span>}
+                  <span>Model: <strong>{selected.analysis?.ai_model || 'gemini-3.5-flash-lite'}</strong></span>
                   {selected.needs_review && <span className="review-badge">Perlu Review Khusus</span>}
                 </div>
                 <div className="detail-tags">
@@ -2123,6 +2210,9 @@ function AnalysisPage({
                 <span className={`figma-analysis-chip chip-severity-${severity}`}>
                   {severity.charAt(0).toUpperCase() + severity.slice(1)}
                 </span>
+                <span className="figma-analysis-chip chip-rejected-sub">
+                  Model: {active.analysis?.ai_model || 'gemini-3.5-flash-lite'}
+                </span>
               </div>
             ) : (
               <div className="figma-chips-row">
@@ -2131,6 +2221,9 @@ function AnalysisPage({
                 </span>
                 <span className="figma-analysis-chip chip-rejected-sub">
                   Non-Sampah Kampus
+                </span>
+                <span className="figma-analysis-chip chip-rejected-sub">
+                  Model: {active.analysis?.ai_model || 'gemini-3.5-flash-lite'}
                 </span>
               </div>
             )}

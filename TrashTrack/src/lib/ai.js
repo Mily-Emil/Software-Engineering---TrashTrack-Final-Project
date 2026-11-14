@@ -71,18 +71,39 @@ export const UNKLAB_ZONES = [
   { name: 'Area Gerbang Utama Jl. Arnold Mononutu', lat: 1.4155, lng: 124.9828 }
 ]
 
+// Tema 3: Poligon batas area kampus Universitas Klabat (7 titik koordinat perimeter kampus)
+export const UNKLAB_POLYGON = [
+  { lat: 1.4228, lng: 124.9805 }, // Barat Laut (Area Kebun & Hutan Kampus)
+  { lat: 1.4232, lng: 124.9862 }, // Utara (Batas Utara Kampus)
+  { lat: 1.4202, lng: 124.9890 }, // Timur Laut (Koridor Jl. Arnold Mononutu Utara)
+  { lat: 1.4148, lng: 124.9888 }, // Tenggara (Gerbang Utama & Jl. Arnold Mononutu Selatan)
+  { lat: 1.4124, lng: 124.9850 }, // Selatan (Batas Asrama Putri & Kompleks Dosen)
+  { lat: 1.4130, lng: 124.9796 }, // Barat Daya (Lembah Barat Kampus)
+  { lat: 1.4185, lng: 124.9792 }  // Barat (Area Lapangan & Fern Wallace Barat)
+]
+
+// Algoritma Ray-Casting Point-in-Polygon untuk memvalidasi apakah titik berada di dalam poligon kampus
+export function isInUnklabPolygon(lat, lng, polygon = UNKLAB_POLYGON) {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false
+  let inside = false
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = polygon[i].lat
+    const yi = polygon[i].lng
+    const xj = polygon[j].lat
+    const yj = polygon[j].lng
+    const intersect =
+      yi > lng !== yj > lng &&
+      lat < ((xj - xi) * (lng - yi)) / (yj - yi + 1e-12) + xi
+    if (intersect) inside = !inside
+  }
+  return inside
+}
+
 export function isInUnklabArea(coords) {
   if (!coords) return false
-  const lat = Number(coords.latitude)
-  const lng = Number(coords.longitude)
-  return (
-    Number.isFinite(lat) &&
-    Number.isFinite(lng) &&
-    lat >= UNKLAB_BOUNDS[0][0] &&
-    lat <= UNKLAB_BOUNDS[1][0] &&
-    lng >= UNKLAB_BOUNDS[0][1] &&
-    lng <= UNKLAB_BOUNDS[1][1]
-  )
+  const lat = Number(coords.latitude ?? coords.lat)
+  const lng = Number(coords.longitude ?? coords.lng)
+  return isInUnklabPolygon(lat, lng)
 }
 
 export function unklabZoneName(coords) {
@@ -106,35 +127,41 @@ export function unklabZoneName(coords) {
   return closest.name
 }
 
-// Tema 9: Generator kode unik laporan non-prediktif (Kriptografis 4 karakter non-ambigu)
+// Tema 9: Generator kode unik laporan non-prediktif (Kriptografis 8 karakter non-ambigu, ~1.1 triliun kombinasi)
 export function generateReportCode() {
   const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ'
   let suffix = ''
+  const buf = new Uint8Array(8)
   if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
-    const buf = new Uint8Array(4)
     crypto.getRandomValues(buf)
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 8; i++) {
       suffix += chars[buf[i] % chars.length]
     }
   } else {
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 8; i++) {
       suffix += chars[Math.floor(Math.random() * chars.length)]
     }
   }
   return `TT-${new Date().getFullYear()}-${suffix}`
 }
 
-// Tema 4: Token perangkat anonim untuk menghindari blokir NAT Wi-Fi bersama Unklab
+// Tema 4: Token perangkat kriptografis untuk dikombinasikan dengan IP publik pada rate-limiter
 export function getOrCreateDeviceId() {
   try {
     let id = localStorage.getItem('unklab_device_id')
-    if (!id) {
-      id = 'dev_' + Math.random().toString(36).slice(2) + Date.now().toString(36)
+    if (!id || id.length < 16) {
+      const bytes = new Uint8Array(12)
+      if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+        crypto.getRandomValues(bytes)
+        id = 'dev_' + Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('')
+      } else {
+        id = 'dev_' + Math.random().toString(36).slice(2) + Date.now().toString(36)
+      }
       localStorage.setItem('unklab_device_id', id)
     }
     return id
   } catch {
-    return 'anon_device'
+    return 'anon_device_fallback'
   }
 }
 
@@ -205,6 +232,8 @@ async function fileToBase64(file) {
   })
 }
 
+let lastVerifiedModel = 'gemini-3.5-flash-lite'
+
 // Memanggil endpoint Server Lokal (/api/gemini) dengan batas 10 detik (NFR-01)
 async function callServerGemini(contents, temperature = 0.1) {
   const controller = new AbortController()
@@ -223,6 +252,9 @@ async function callServerGemini(contents, temperature = 0.1) {
       return null
     }
     const data = await res.json()
+    if (data?.model) {
+      lastVerifiedModel = data.model
+    }
     return data?.text || null
   } catch (err) {
     if (err?.name === 'AbortError' || /10 detik/i.test(err?.message || '')) {
@@ -235,7 +267,7 @@ async function callServerGemini(contents, temperature = 0.1) {
 }
 
 // Tema 2: Validasi skema keluaran JSON dengan rubrik keparahan & ambang batas 0.70
-export function validateVisionJson(rawOrObj) {
+export function validateVisionJson(rawOrObj, modelName = lastVerifiedModel) {
   try {
     const obj =
       typeof rawOrObj === 'string'
@@ -251,6 +283,7 @@ export function validateVisionJson(rawOrObj) {
 
     // Ambang batas validasi manusia jika confidence < 0.70 (Tema 2)
     const needsReview = !obj.is_waste || score < 0.70
+    const resolvedModel = obj.ai_model || modelName || 'gemini-3.5-flash-lite'
 
     if (!obj.is_waste) {
       return {
@@ -259,6 +292,7 @@ export function validateVisionJson(rawOrObj) {
         severity: null,
         confidence_score: score,
         needs_review: true,
+        ai_model: resolvedModel,
         detected_notes:
           obj.detected_notes ||
           'Foto tidak terdeteksi sebagai sampah fisik (terdeteksi sebagai manusia, boneka/mainan, tangkapan layar, atau objek non-sampah).',
@@ -280,6 +314,7 @@ export function validateVisionJson(rawOrObj) {
       severity: validSeverity,
       confidence_score: score,
       needs_review: needsReview,
+      ai_model: resolvedModel,
       detected_notes: obj.detected_notes || (obj.is_b3 ? 'Terdeteksi potensi sampah B3/khusus' : null),
       recommendation: obj.recommendation || '',
       is_validated: Boolean(obj.is_validated)
@@ -289,14 +324,14 @@ export function validateVisionJson(rawOrObj) {
   }
 }
 
-// Analisis foto (FR-02) dengan prompt lengkap rubrik keparahan & deteksi B3/campuran (Tema 2)
+// Analisis foto (FR-02) dengan prompt lengkap rubrik keparahan & deteksi B3/campuran (Tema 1 & 2)
 export async function analyzeWasteClientFallback(file, description = '') {
   const combined = `${file?.name || ''} ${description || ''}`.toLowerCase()
   if (/timeout_test|gagal_api/i.test(combined)) {
     throw new Error('Gemini API gagal atau melewati batas waktu 10 detik. Silakan kirim ulang laporan Anda.')
   }
 
-  // 1. Coba panggil Gemini API melalui server (/api/gemini)
+  // 1. Panggil Gemini API melalui server (/api/gemini)
   try {
     const base64Data = await fileToBase64(file)
     const basePrompt = `Anda adalah sistem deteksi dan verifikasi titik sampah di lingkungan kampus Universitas Klabat (Unklab).
@@ -350,7 +385,7 @@ Indikator keluaran: Kembalikan HANYA JSON murni tanpa markdown:
     )
 
     if (firstRaw) {
-      const firstValid = validateVisionJson(firstRaw)
+      const firstValid = validateVisionJson(firstRaw, lastVerifiedModel)
       if (firstValid) return firstValid
 
       // Retry 1 kali jika keluaran tidak valid (Subbab 3.2)
@@ -367,46 +402,27 @@ Indikator keluaran: Kembalikan HANYA JSON murni tanpa markdown:
         ],
         0.0
       )
-      const retryValid = retryRaw ? validateVisionJson(retryRaw) : null
+      const retryValid = retryRaw ? validateVisionJson(retryRaw, lastVerifiedModel) : null
       if (retryValid) return retryValid
     }
   } catch (err) {
     if (/10 detik/i.test(err?.message || '')) throw err
   }
 
-  // 2. Fallback deterministik jika Gemini API tidak tersedia
-  return new Promise(resolve => {
-    setTimeout(() => {
-      if (/bukan_sampah|bukan sampah|tanpa_sampah|tanpa sampah|kosong|selfie|wajah|gedung_bersih|mobil/i.test(combined)) {
-        resolve({
-          is_waste: false,
-          category: 'anorganik',
-          severity: 'rendah',
-          confidence_score: 0.92,
-          needs_review: true,
-          detected_notes: 'Foto terdeteksi bukan sampah. Menunggu validasi admin.',
-          is_validated: false
-        })
-        return
-      }
-
-      const isOrganic = /daun|ranting|rumput|makanan|nasi|sayur|buah|kulit|sisa|kompos|organik/i.test(combined)
-      const isHigh = /banyak|menumpuk|penuh|parah|meluber|besar|bau|tinggi/i.test(combined)
-      const isLow = /sedikit|kecil|satu|ringan|rendah/i.test(combined)
-
-      resolve({
-        is_waste: true,
-        category: isOrganic ? 'organik' : 'anorganik',
-        severity: isHigh ? 'tinggi' : isLow ? 'rendah' : 'sedang',
-        confidence_score: isOrganic ? 0.94 : 0.91,
-        needs_review: false,
-        recommendation: isOrganic
-          ? 'Kumpulkan sampah organik untuk pengomposan kampus Universitas Klabat dan hindari membakarnya.'
-          : 'Pilah sampah anorganik (botol/kaleng/plastik) ke wadah daur ulang kampus.',
-        is_validated: false
-      })
-    }, 450)
-  })
+  // 2. Fallback transparan (Tema 1: Tanpa memalsukan hasil AI dari kata kunci)
+  // Jika Gemini API tidak dapat dijangkau, laporan ditandai needs_review: true dengan confidence 0.00
+  // agar masuk ke antrean validasi manual petugas (HITL) dan tidak menyamar sebagai hasil Gemini.
+  return {
+    is_waste: true,
+    category: 'anorganik',
+    severity: 'sedang',
+    confidence_score: 0.0,
+    needs_review: true,
+    ai_model: 'fallback-manual-review',
+    detected_notes: 'Layanan Gemini VLM tidak dapat dijangkau. Laporan disimpan ke antrean verifikasi manual petugas (HITL).',
+    recommendation: 'Menunggu pemeriksaan visual dan klasifikasi manual oleh petugas kebersihan kampus.',
+    is_validated: false
+  }
 }
 
 // Saran awal Chatbot

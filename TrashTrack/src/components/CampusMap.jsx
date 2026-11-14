@@ -1,41 +1,51 @@
-// Komponen Peta Google Maps Kampus Universitas Klabat (Unklab)
-// Menampilkan tile Google Maps (Roadmap & Satelit Hybrid) yang up-to-date
-// dengan tetap mempertahankan seluruh titik sampah, batas area kampus, dan fungsi sistem.
-import { useState } from 'react'
-import { MapContainer, Marker, Rectangle, TileLayer, useMapEvents } from 'react-leaflet'
-import L from 'leaflet'
-import { MAP_VIEW_BOUNDS, UNKLAB_BOUNDS, UNKLAB_CENTER } from '../lib/ai'
+// Komponen Peta Resmi Google Maps JavaScript API (@vis.gl/react-google-maps)
+// Menampilkan peta Kampus Universitas Klabat (Unklab) dengan poligon batas kampus (UNKLAB_POLYGON)
+// serta AdvancedMarker untuk titik laporan sampah dan pemilih lokasi.
+import { useEffect, useState } from 'react'
+import { APIProvider, AdvancedMarker, Map, useMap, useMapsLibrary } from '@vis.gl/react-google-maps'
+import { MAP_VIEW_BOUNDS, UNKLAB_CENTER, UNKLAB_POLYGON } from '../lib/ai'
 
-export const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || ''
+export const GOOGLE_MAPS_API_KEY = (import.meta.env.VITE_GOOGLE_MAPS_API_KEY || '').trim()
+export const GOOGLE_MAPS_MAP_ID = (import.meta.env.VITE_GOOGLE_MAPS_MAP_ID || 'DEMO_MAP_ID').trim()
 
-export const iconFor = status =>
-  L.divIcon({
-    className: '',
-    html: `<div class="pin pin-${status === 'Menunggu' ? 'waiting' : status === 'Diproses' ? 'progress' : status === 'Ditolak' ? 'rejected' : 'done'}"><span></span></div>`,
-    iconSize: [30, 38],
-    iconAnchor: [15, 36]
-  })
+export function statusPinClass(status) {
+  if (status === 'Menunggu') return 'waiting'
+  if (status === 'Diproses') return 'progress'
+  if (status === 'Ditolak') return 'rejected'
+  return 'done'
+}
 
-const pickedIcon = L.divIcon({
-  className: '',
-  html: `<div class="pin pin-picked"><span></span></div>`,
-  iconSize: [30, 38],
-  iconAnchor: [15, 36]
-})
+// Komponen Poligon Batas Kampus Universitas Klabat (7 titik perimeter kampus)
+function CampusBoundaryPolygon({ isHybrid, fillOpacity = 0.06 }) {
+  const map = useMap()
+  const mapsLib = useMapsLibrary('maps')
 
-function MapClickHandler({ onPick }) {
-  useMapEvents({
-    click(e) {
-      if (onPick) {
-        onPick({ latitude: e.latlng.lat, longitude: e.latlng.lng })
-      }
+  useEffect(() => {
+    if (!map || !mapsLib) return
+    const strokeColor = isHybrid ? '#4ade80' : '#1b6943'
+    const polygon = new mapsLib.Polygon({
+      paths: UNKLAB_POLYGON,
+      strokeColor,
+      strokeOpacity: 0.92,
+      strokeWeight: 2.5,
+      fillColor: strokeColor,
+      fillOpacity,
+      clickable: false,
+      map
+    })
+    return () => {
+      polygon.setMap(null)
     }
-  })
+  }, [map, mapsLib, isHybrid, fillOpacity])
+
   return null
 }
 
 export function GoogleMapsProvider({ children }) {
-  return children
+  if (!GOOGLE_MAPS_API_KEY) {
+    return children
+  }
+  return <APIProvider apiKey={GOOGLE_MAPS_API_KEY}>{children}</APIProvider>
 }
 
 export default function CampusGoogleMap({
@@ -45,17 +55,20 @@ export default function CampusGoogleMap({
   interactive = true,
   onPick,
   pickPosition,
-  fillOpacity = 0.05,
+  fillOpacity = 0.06,
   showControls = true
 }) {
-  // 'm' = Google Maps Standard Roadmap (Jalan & Gedung Up-to-date)
-  // 'y' = Google Maps Hybrid (Satelit + Nama Gedung & Jalan)
+  // 'm' = Google Maps Standard Roadmap | 'y' = Google Maps Hybrid (Satelit + Label Gedung)
   const [layerType, setLayerType] = useState('m')
+  const mapTypeId = layerType === 'y' ? 'hybrid' : 'roadmap'
 
-  const googleTileUrl =
-    layerType === 'y'
-      ? 'https://mt{s}.google.com/vt/lyrs=y&hl=id&x={x}&y={y}&z={z}'
-      : 'https://mt{s}.google.com/vt/lyrs=m&hl=id&x={x}&y={y}&z={z}'
+  const handleMapClick = event => {
+    if (!onPick) return
+    const latLng = event?.detail?.latLng
+    if (latLng && typeof latLng.lat === 'number' && typeof latLng.lng === 'number') {
+      onPick({ latitude: latLng.lat, longitude: latLng.lng })
+    }
+  }
 
   return (
     <div className={`gmap-wrap ${className}`}>
@@ -84,54 +97,59 @@ export default function CampusGoogleMap({
         </div>
       )}
 
-      <MapContainer
-        center={UNKLAB_CENTER}
-        zoom={16}
+      <Map
+        defaultCenter={{ lat: UNKLAB_CENTER[0], lng: UNKLAB_CENTER[1] }}
+        defaultZoom={16}
+        minZoom={14}
         maxZoom={20}
-        maxBounds={MAP_VIEW_BOUNDS}
-        maxBoundsViscosity={0.9}
-        scrollWheelZoom={interactive}
+        mapId={GOOGLE_MAPS_MAP_ID}
+        mapTypeId={mapTypeId}
+        gestureHandling={interactive ? 'greedy' : 'cooperative'}
+        disableDefaultUI={!interactive}
+        mapTypeControl={false}
+        streetViewControl={false}
+        fullscreenControl={interactive}
         zoomControl={interactive}
-        attributionControl={false}
+        clickableIcons={false}
+        restriction={{
+          latLngBounds: {
+            south: MAP_VIEW_BOUNDS[0][0],
+            west: MAP_VIEW_BOUNDS[0][1],
+            north: MAP_VIEW_BOUNDS[1][0],
+            east: MAP_VIEW_BOUNDS[1][1]
+          },
+          strictBounds: false
+        }}
+        onClick={handleMapClick}
         className="gmap-leaflet-inner"
+        style={{ width: '100%', height: '100%' }}
       >
-        <TileLayer
-          key={layerType}
-          url={googleTileUrl}
-          subdomains={['0', '1', '2', '3']}
-          maxZoom={20}
-        />
-        <Rectangle
-          bounds={UNKLAB_BOUNDS}
-          pathOptions={{
-            color: layerType === 'y' ? '#4ade80' : '#2b6e46',
-            weight: 2,
-            dashArray: '6 4',
-            fillOpacity
-          }}
-        />
-        {onPick && <MapClickHandler onPick={onPick} />}
+        <CampusBoundaryPolygon isHybrid={layerType === 'y'} fillOpacity={fillOpacity} />
+
         {reports.map(r => (
-          <Marker
+          <AdvancedMarker
             key={r.id || r.report_code}
-            position={[Number(r.latitude), Number(r.longitude)]}
-            icon={iconFor(r.status)}
-            eventHandlers={
-              onMarkerClick
-                ? {
-                    click: () => onMarkerClick(r)
-                  }
-                : undefined
-            }
-          />
+            position={{ lat: Number(r.latitude), lng: Number(r.longitude) }}
+            onClick={() => onMarkerClick && onMarkerClick(r)}
+            title={`${r.report_code} (${r.status})`}
+          >
+            <div className={`pin pin-${statusPinClass(r.status)}`}>
+              <span />
+            </div>
+          </AdvancedMarker>
         ))}
+
         {pickPosition && (
-          <Marker
-            position={[Number(pickPosition.latitude), Number(pickPosition.longitude)]}
-            icon={pickedIcon}
-          />
+          <AdvancedMarker
+            position={{ lat: Number(pickPosition.latitude), lng: Number(pickPosition.longitude) }}
+            title="Titik lokasi laporan"
+          >
+            <div className="pin pin-picked">
+              <span />
+            </div>
+          </AdvancedMarker>
         )}
-      </MapContainer>
+      </Map>
 
       <a
         className="gmap-badge"
@@ -141,7 +159,7 @@ export default function CampusGoogleMap({
         title="Buka lokasi Kampus Universitas Klabat di Google Maps"
       >
         <span className="gmap-dot" />
-        Google Maps
+        Google Maps API
       </a>
     </div>
   )
