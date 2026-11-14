@@ -1025,16 +1025,16 @@ function App() {
                       Menunggu
                     </span>
                     <span>
+                      <i className="dot rejected" />
+                      Ditolak
+                    </span>
+                    <span>
                       <i className="dot yellow" />
                       Diproses
                     </span>
                     <span>
                       <i className="dot green" />
                       Selesai
-                    </span>
-                    <span>
-                      <i className="dot rejected" />
-                      Ditolak
                     </span>
                   </div>
                 </section>
@@ -1172,13 +1172,13 @@ function App() {
                     <i className="dot red" /> Menunggu <b>{count('Menunggu')}</b>
                   </span>
                   <span>
+                    <i className="dot rejected" /> Ditolak <b>{count('Ditolak')}</b>
+                  </span>
+                  <span>
                     <i className="dot yellow" /> Diproses <b>{count('Diproses')}</b>
                   </span>
                   <span>
                     <i className="dot green" /> Selesai <b>{count('Selesai')}</b>
-                  </span>
-                  <span>
-                    <i className="dot rejected" /> Ditolak <b>{count('Ditolak')}</b>
                   </span>
                   <span className="map-hint">
                     <MapPin size={14} /> Klik marker untuk melihat detail laporan & hasil analisis AI
