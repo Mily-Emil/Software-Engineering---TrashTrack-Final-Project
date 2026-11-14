@@ -571,7 +571,8 @@ button {
   color: #b91c1c;
   background: #fee2e2;
 }
-.status-chip.rejected i {
+.status-chip.rejected i,
+.dot.rejected {
   background: #ef4444;
 }
 .severity-chip {
@@ -665,6 +666,9 @@ button {
 }
 .pin-done span {
   background: #59a778;
+}
+.pin-rejected span {
+  background: #ef4444;
 }
 .bottom-grid {
   display: grid;

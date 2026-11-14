@@ -1032,6 +1032,10 @@ function App() {
                       <i className="dot green" />
                       Selesai
                     </span>
+                    <span>
+                      <i className="dot rejected" />
+                      Ditolak
+                    </span>
                   </div>
                 </section>
               </div>
@@ -1172,6 +1176,9 @@ function App() {
                   </span>
                   <span>
                     <i className="dot green" /> Selesai <b>{count('Selesai')}</b>
+                  </span>
+                  <span>
+                    <i className="dot rejected" /> Ditolak <b>{count('Ditolak')}</b>
                   </span>
                   <span className="map-hint">
                     <MapPin size={14} /> Klik marker untuk melihat detail laporan & hasil analisis AI
